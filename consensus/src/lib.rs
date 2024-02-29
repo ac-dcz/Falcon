@@ -1,10 +1,10 @@
 #[macro_use]
 mod error;
 mod aggregator;
+mod commiter;
 mod config;
 mod consensus;
 mod core;
-mod fallback;
 mod filter;
 mod leader;
 mod mempool;

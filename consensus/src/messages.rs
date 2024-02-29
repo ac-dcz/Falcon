@@ -1,3 +1,4 @@
+use crate::commiter::MAX_BLOCK_BUFFER;
 use crate::config::Committee;
 use crate::core::{Bool, HeightNumber, SeqNumber};
 use crate::error::{ConsensusError, ConsensusResult};
@@ -17,56 +18,35 @@ pub mod messages_tests;
 // daniel: Add view, height, fallback in Block, Vote and QC
 #[derive(Serialize, Deserialize, Default, Clone)]
 pub struct Block {
-    pub qc: QC, //前一个节点的highQC
-    pub tc: Option<TC>,
-    pub coin: Option<RandomCoin>,
     pub author: PublicKey,
-    pub view: SeqNumber, // increment by 1 after every async fallback, initially 0
-    pub round: SeqNumber,
-    pub height: HeightNumber, // for async block height={1,2}, for sync block height=0
-    pub fallback: Bool,       // 1 if async block; 0 if sync block
+    pub view: SeqNumber,      //
+    pub height: HeightNumber, // author`s id
     pub payload: Vec<Digest>,
     pub signature: Signature,
 }
 
 impl Block {
     pub async fn new(
-        qc: QC,
-        tc: Option<TC>,
-        coin: Option<RandomCoin>,
         author: PublicKey,
         view: SeqNumber,
-        round: SeqNumber,
-        height: HeightNumber,
-        fallback: Bool,
+        height: SeqNumber,
         payload: Vec<Digest>,
         mut signature_service: SignatureService,
     ) -> Self {
         let mut block = Self {
-            qc,
-            tc,
-            coin,
             author,
             view,
-            round,
             height,
-            fallback,
             payload,
             signature: Signature::default(),
         };
-        if fallback == 0 {
-            block.height = 0;
-        }
+
         let signature = signature_service.request_signature(block.digest()).await;
         Self { signature, ..block }
     }
 
     pub fn genesis() -> Self {
         Block::default()
-    }
-
-    pub fn parent(&self) -> &Digest {
-        &self.qc.hash
     }
 
     pub fn verify(&self, committee: &Committee) -> ConsensusResult<()> {
@@ -77,63 +57,17 @@ impl Block {
             ConsensusError::UnknownAuthority(self.author)
         );
 
-        ensure!(
-            (self.fallback == 0 && self.height == 0)
-                || (self.fallback == 1 && (self.height == 1 || self.height == 2)),
-            ConsensusError::InvalidHeight(self.height)
-        );
-
         // Check the signature.
         self.signature.verify(&self.digest(), &self.author)?;
 
-        // Check the embedded QC.
-        if self.qc != QC::genesis() {
-            self.qc.verify(committee)?;
-        }
-
-        // Check the TC embedded in the block (if any).
-        if let Some(ref tc) = self.tc {
-            tc.verify(committee)?;
-        }
         Ok(())
     }
 
-    pub fn verify_fallback(
-        &self,
-        committee: &Committee,
-        pk_set: &PublicKeySet,
-    ) -> ConsensusResult<()> {
-        // Ensure the authority has voting rights.
-        let voting_rights = committee.stake(&self.author);
-        ensure!(
-            voting_rights > 0,
-            ConsensusError::UnknownAuthority(self.author)
-        );
-
-        ensure!(
-            (self.fallback == 0 && self.height == 0)
-                || (self.fallback == 1 && (self.height == 1 || self.height == 2)),
-            ConsensusError::InvalidHeight(self.height)
-        );
-
-        // Check the signature.
-        self.signature.verify(&self.digest(), &self.author)?;
-
-        // Check the embedded QC.
-        if self.qc != QC::genesis() {
-            self.qc.verify(committee)?;
-        }
-
-        // Check the TC embedded in the block (if any).
-        if let Some(ref tc) = self.tc {
-            tc.verify(committee)?;
-        }
-
-        // Check the coin embedded in the block (if any).
-        if let Some(ref coin) = self.coin {
-            coin.verify(committee, pk_set)?;
-        }
-        Ok(())
+    // block`s rank
+    pub fn rank(&self, committee: &Committee) -> usize {
+        let r =
+            ((self.view as usize) * committee.size() + (self.height as usize)) % MAX_BLOCK_BUFFER;
+        r
     }
 }
 
