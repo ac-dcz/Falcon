@@ -72,7 +72,7 @@ async fn handle_proposal() {
     let (public_key, secret_key) = keys().pop().unwrap();
     let vote = Vote::new_from_key(
         block.digest(),
-        block.view,
+        block.epoch,
         block.round,
         block.height,
         block.fallback,
@@ -118,7 +118,7 @@ async fn generate_proposal() {
         .map(|(public_key, secret_key)| {
             Vote::new_from_key(
                 hash.clone(),
-                block.view,
+                block.epoch,
                 block.round,
                 block.height,
                 block.fallback,
@@ -130,7 +130,7 @@ async fn generate_proposal() {
         .collect();
     let qc = QC {
         hash,
-        view: block.view,
+        view: block.epoch,
         round: block.round,
         height: block.height,
         fallback: block.fallback,
