@@ -101,7 +101,7 @@ async fn get_missing_parent_block() {
     match rx_network.recv().await {
         Some((message, mut recipients)) => {
             match message {
-                ConsensusMessage::SyncRequest(b, s) => {
+                ConsensusMessage::SyncRequestMsg(b, s) => {
                     assert_eq!(b, parent_block.digest());
                     assert_eq!(s, name);
                 }
@@ -127,7 +127,7 @@ async fn get_missing_parent_block() {
     // Now that we have the parent, ensure the synchronizer
     // loops back the block to the core to resume processing.
     match rx_core.recv().await {
-        Some(ConsensusMessage::LoopBack(b)) => assert_eq!(b, block.clone()),
+        Some(ConsensusMessage::LoopBackMsg(b)) => assert_eq!(b, block.clone()),
         _ => assert!(false),
     }
 }

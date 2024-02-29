@@ -1,9 +1,7 @@
 use crate::config::{Committee, Parameters, Protocol};
 use crate::core::{ConsensusMessage, Core};
 use crate::error::ConsensusResult;
-use crate::fallback::Fallback;
 use crate::filter::Filter;
-use crate::leader::LeaderElector;
 use crate::mempool::{ConsensusMempoolMessage, MempoolDriver};
 use crate::messages::Block;
 use crate::synchronizer::Synchronizer;
@@ -71,9 +69,6 @@ impl Consensus {
             network_sender.run().await;
         });
 
-        // The leader elector algorithm.
-        let leader_elector = LeaderElector::new(committee.clone());
-
         // Make the mempool driver which will mediate our requests to the mempool.
         let mempool_driver = MempoolDriver::new(tx_consensus_mempool);
 
@@ -93,15 +88,15 @@ impl Consensus {
         .await;
 
         match protocol {
-            Protocol::HotStuff => {
+            Protocol::FlexHBBFT => {
                 // Run HotStuff
                 let mut core = Core::new(
                     name,
                     committee,
                     parameters,
                     signature_service,
+                    pk_set,
                     store,
-                    leader_elector,
                     mempool_driver,
                     synchronizer,
                     /* core_channel */ rx_core,
@@ -112,48 +107,7 @@ impl Consensus {
                     core.run().await;
                 });
             }
-            Protocol::AsyncHotStuff => {
-                // Run AsyncHotStuff
-                let mut hotstuff_with_fallback = Fallback::new(
-                    name,
-                    committee,
-                    parameters,
-                    signature_service,
-                    pk_set,
-                    store,
-                    leader_elector,
-                    mempool_driver,
-                    synchronizer,
-                    /* core_channel */ rx_core,
-                    /* network_filter */ tx_filter,
-                    /* commit_channel */ tx_commit,
-                    false,
-                );
-                tokio::spawn(async move {
-                    hotstuff_with_fallback.run().await;
-                });
-            }
-            Protocol::TwoChainVABA => {
-                // Run TwoChainVABA, which is just fallback with timeout=0, i.e., immediately send timeout after exiting a fallback
-                let mut vaba = Fallback::new(
-                    name,
-                    committee,
-                    parameters,
-                    signature_service,
-                    pk_set,
-                    store,
-                    leader_elector,
-                    mempool_driver,
-                    synchronizer,
-                    /* core_channel */ rx_core,
-                    /* network_filter */ tx_filter,
-                    /* commit_channel */ tx_commit,
-                    true, // running vaba
-                );
-                tokio::spawn(async move {
-                    vaba.run().await;
-                });
-            }
+
             _ => {
                 return Ok(());
             }

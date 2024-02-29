@@ -28,14 +28,14 @@ pub struct Block {
 impl Block {
     pub async fn new(
         author: PublicKey,
-        view: SeqNumber,
+        epoch: SeqNumber,
         height: SeqNumber,
         payload: Vec<Digest>,
         mut signature_service: SignatureService,
     ) -> Self {
         let block = Self {
             author,
-            epoch: view,
+            epoch,
             height,
             payload,
             signature: Signature::default(),
@@ -113,18 +113,61 @@ impl fmt::Display for Block {
 }
 
 /************************** RBC Struct ************************************/
-pub struct RBCVal {}
-pub struct RBCEcho {}
-
-pub struct RBCReady {}
-
-//
+#[derive(Serialize, Deserialize, Default, Clone)]
+pub struct EchoVote {}
+impl fmt::Debug for EchoVote {
+    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+        write!(
+            f,
+            // "{}: B(author {}, view {},  height {}, payload_len {})",
+            // self.digest(),
+            // self.author,
+            // self.epoch,
+            // self.height,
+            // self.payload.iter().map(|x| x.size()).sum::<usize>(),
+            ""
+        )
+    }
+}
+#[derive(Serialize, Deserialize, Default, Clone)]
+pub struct ReadyVote {}
+impl fmt::Debug for ReadyVote {
+    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+        write!(
+            f,
+            // "{}: B(author {}, view {},  height {}, payload_len {})",
+            // self.digest(),
+            // self.author,
+            // self.epoch,
+            // self.height,
+            // self.payload.iter().map(|x| x.size()).sum::<usize>(),
+            ""
+        )
+    }
+}
+#[derive(Serialize, Deserialize, Default, Clone)]
 pub struct RBCProof {}
 
 /************************** RBC Struct ************************************/
 
 /************************** prepare Struct ************************************/
+#[derive(Serialize, Deserialize, Default, Clone)]
 pub struct Prepare {}
+
+impl fmt::Debug for Prepare {
+    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+        write!(
+            f,
+            // "{}: B(author {}, view {},  height {}, payload_len {})",
+            // self.digest(),
+            // self.author,
+            // self.epoch,
+            // self.height,
+            // self.payload.iter().map(|x| x.size()).sum::<usize>(),
+            ""
+        )
+    }
+}
 /************************** pre-prepare Struct ************************************/
 
 /************************** ABA Struct ************************************/

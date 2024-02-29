@@ -2,7 +2,7 @@ use crate::config::Committee;
 use crate::core::ConsensusMessage;
 use crate::error::ConsensusResult;
 use crate::filter::FilterInput;
-use crate::messages::{Block, QC};
+use crate::messages::Block;
 use crypto::Hash as _;
 use crypto::{Digest, PublicKey};
 use futures::stream::futures_unordered::FuturesUnordered;
@@ -59,7 +59,7 @@ impl Synchronizer {
                                     .expect("Failed to measure time")
                                     .as_millis();
                                 requests.insert(parent.clone(), now);
-                                let message = ConsensusMessage::SyncRequest(parent, name);//请求缺失的block
+                                let message = ConsensusMessage::SyncRequestMsg(parent, name);//请求缺失的block
                                 Self::transmit(message, &name, None, &network_filter, &committee).await.unwrap();
                             }
                         }
@@ -69,7 +69,7 @@ impl Synchronizer {
                             debug!("consensus sync loopback");
                             let _ = pending.remove(&block.digest());
                             let _ = requests.remove(&block.parent());
-                            let message = ConsensusMessage::LoopBack(block);
+                            let message = ConsensusMessage::LoopBackMsg(block);
                             if let Err(e) = core_channel.send(message).await {
                                 panic!("Failed to send message through core channel: {}", e);
                             }
@@ -85,7 +85,7 @@ impl Synchronizer {
                                 .as_millis();
                             if timestamp + (sync_retry_delay as u128) < now {
                                 debug!("Requesting sync for block {} (retry)", digest);
-                                let message = ConsensusMessage::SyncRequest(digest.clone(), name);
+                                let message = ConsensusMessage::SyncRequestMsg(digest.clone(), name);
                                 Self::transmit(message, &name, None, &network_filter, &committee).await.unwrap();
                             }
                         }
