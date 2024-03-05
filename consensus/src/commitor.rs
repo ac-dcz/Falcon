@@ -9,7 +9,7 @@ pub mod timer_tests;
 
 pub const MAX_BLOCK_BUFFER: usize = 100000;
 
-fn try_to_commit(
+async fn try_to_commit(
     mut cur_ind: usize,
     buffer: &mut Vec<Option<Block>>,
     filter: &mut Vec<bool>,
@@ -17,7 +17,7 @@ fn try_to_commit(
 ) -> usize {
     let mut data = Vec::new();
     loop {
-        if let Some(block) = buffer[cur_ind] {
+        if let Some(block) = buffer[cur_ind].clone() {
             data.push(block);
             buffer[cur_ind] = None;
             cur_ind = (cur_ind + 1) % MAX_BLOCK_BUFFER
@@ -29,8 +29,11 @@ fn try_to_commit(
         }
     }
 
+    //向共识层发送可以提交的块
     for block in data {
-        //提交 Block
+        if let Err(e) = tx_commit.send(block).await {
+            panic!("Failed to filter block to commiter core: {}", e);
+        }
     }
 
     cur_ind
@@ -42,32 +45,32 @@ pub struct Commitor {
 }
 
 impl Commitor {
-    pub fn new(tx_commit: Sender<Block>, committee: &Committee) -> Self {
+    pub fn new(tx_commit: Sender<Block>, committee: Committee) -> Self {
         // cur_indx: usize,
         // buffer: Vec<Option<Block>>,
         // filter: Vec<bool>,
-        let (tx_block, rx_block): (_, Receiver<Block>) = channel(10000);
-        let (tx_filter, rx_filter): (_, Receiver<usize>) = channel(10000);
+        let (tx_block, mut rx_block): (_, Receiver<Block>) = channel(10000);
+        let (tx_filter, mut rx_filter): (_, Receiver<usize>) = channel(10000);
 
         tokio::spawn(async move {
             let mut cur_ind = 0;
             let mut buffer: Vec<Option<Block>> = Vec::with_capacity(MAX_BLOCK_BUFFER);
             let mut filter: Vec<bool> = Vec::with_capacity(MAX_BLOCK_BUFFER);
-            for i in 0..MAX_BLOCK_BUFFER {
+            for _ in 0..MAX_BLOCK_BUFFER {
                 buffer.push(None);
                 filter.push(false);
             }
             loop {
                 tokio::select! {
                     Some(block) = rx_block.recv()=>{
-                        let rank = block.rank(committee);
+                        let rank = block.rank(&committee);
                         if let Some(_) = buffer[rank]{
                             //速率过快 错误处理 增大Buffer
                         }
                         buffer[rank] = Some(block);
 
                         //try to commit
-                        cur_ind = try_to_commit(cur_ind, &mut buffer, &mut filter, tx_commit.clone());
+                        cur_ind = try_to_commit(cur_ind, &mut buffer, &mut filter, tx_commit.clone()).await;
                     }
                     Some(ind) = rx_filter.recv()=>{
                         if filter[ind]{
@@ -76,7 +79,7 @@ impl Commitor {
                         filter[ind]=true;
 
                         //try to commit
-                        cur_ind = try_to_commit(cur_ind, &mut buffer, &mut filter, tx_commit.clone());
+                        cur_ind = try_to_commit(cur_ind, &mut buffer, &mut filter, tx_commit.clone()).await;
                     }
                 }
             }

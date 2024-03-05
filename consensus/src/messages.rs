@@ -167,7 +167,7 @@ impl Hash for EchoVote {
         hasher.update(self.author.0);
         hasher.update(self.epoch.to_le_bytes());
         hasher.update(self.height.to_le_bytes());
-        hasher.update(self.digest);
+        hasher.update(self.digest.0);
         Digest(hasher.finalize().as_slice()[..32].try_into().unwrap())
     }
 }
@@ -253,7 +253,7 @@ impl Hash for ReadyVote {
         hasher.update(self.author.0);
         hasher.update(self.epoch.to_le_bytes());
         hasher.update(self.height.to_le_bytes());
-        hasher.update(self.digest);
+        hasher.update(self.digest.0);
         Digest(hasher.finalize().as_slice()[..32].try_into().unwrap())
     }
 }

@@ -48,7 +48,7 @@ impl Synchronizer {
                 tokio::select! {
                     Some(block) = rx_inner.recv() => {
                         if pending.insert(block.digest()) {
-                            let parent = block.parent().clone();
+                            let parent = block.digest().clone();//?????????????????
                             let fut = Self::waiter(store_copy.clone(), parent.clone(), block);
                             waiting.push(fut);
 
@@ -59,7 +59,7 @@ impl Synchronizer {
                                     .expect("Failed to measure time")
                                     .as_millis();
                                 requests.insert(parent.clone(), now);
-                                let message = ConsensusMessage::SyncRequestMsg(parent, name);//请求缺失的block
+                                let message = ConsensusMessage::SyncRequestMsg(8, name);//请求缺失的block????????????????????????
                                 Self::transmit(message, &name, None, &network_filter, &committee).await.unwrap();
                             }
                         }
@@ -68,7 +68,7 @@ impl Synchronizer {
                         Ok(block) => {
                             debug!("consensus sync loopback");
                             let _ = pending.remove(&block.digest());
-                            let _ = requests.remove(&block.parent());
+                            let _ = requests.remove(&block.digest());/////////////////?
                             let message = ConsensusMessage::LoopBackMsg(block);
                             if let Err(e) = core_channel.send(message).await {
                                 panic!("Failed to send message through core channel: {}", e);
@@ -85,7 +85,7 @@ impl Synchronizer {
                                 .as_millis();
                             if timestamp + (sync_retry_delay as u128) < now {
                                 debug!("Requesting sync for block {} (retry)", digest);
-                                let message = ConsensusMessage::SyncRequestMsg(digest.clone(), name);
+                                let message = ConsensusMessage::SyncRequestMsg(8, name);///////////////?
                                 Self::transmit(message, &name, None, &network_filter, &committee).await.unwrap();
                             }
                         }
@@ -126,21 +126,22 @@ impl Synchronizer {
         Ok(())
     }
 
-    pub async fn get_parent_block(&mut self, block: &Block) -> ConsensusResult<Option<Block>> {
-        if block.qc == QC::genesis() {
-            return Ok(Some(Block::genesis()));
-        }
-        let parent = block.parent();
-        match self.store.read(parent.to_vec()).await? {
-            Some(bytes) => Ok(Some(bincode::deserialize(&bytes)?)),
-            None => {
-                //如果没有 向其他节点发送request
-                if let Err(e) = self.inner_channel.send(block.clone()).await {
-                    panic!("Failed to send request to synchronizer: {}", e);
-                }
-                Ok(None)
-            }
-        }
+    pub async fn get_parent_block(&mut self, _block: &Block) -> ConsensusResult<Option<Block>> {
+        // if block.r == QC::genesis() {
+        //     return Ok(Some(Block::genesis()));
+        // }
+        // let parent = block.parent();
+        // match self.store.read(parent.to_vec()).await? {
+        //     Some(bytes) => Ok(Some(bincode::deserialize(&bytes)?)),
+        //     None => {
+        //         //如果没有 向其他节点发送request
+        //         if let Err(e) = self.inner_channel.send(block.clone()).await {
+        //             panic!("Failed to send request to synchronizer: {}", e);
+        //         }
+        //         Ok(None)
+        //     }
+        // }
+        Ok(None)
     }
 
     pub async fn get_ancestors(
