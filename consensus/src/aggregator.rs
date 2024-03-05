@@ -1,9 +1,9 @@
-use crate::commiter::MAX_BLOCK_BUFFER;
+use crate::commitor::MAX_BLOCK_BUFFER;
 use crate::config::{Committee, Stake};
-use crate::core::SeqNumber;
+use crate::core::{SeqNumber, OPT, PES, RBC_ECHO, RBC_READY};
 use crate::error::{ConsensusError, ConsensusResult};
-use crate::messages::RandomnessShare;
-use crypto::PublicKey;
+use crate::messages::{EchoVote, Prepare, RBCProof, RandomnessShare, ReadyVote};
+use crypto::{PublicKey, Signature};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::TryInto;
 use threshold_crypto::PublicKeySet;
@@ -16,15 +16,68 @@ pub mod aggregator_tests;
 // In VABA and async fallback, votes aggregated by round, timeouts/coin_share aggregated by view
 pub struct Aggregator {
     committee: Committee,
-    sharecoin_aggregators: HashMap<(SeqNumber, SeqNumber, SeqNumber), Box<RandomCoinMaker>>,
+    share_coin_aggregators: HashMap<(SeqNumber, SeqNumber, SeqNumber), Box<RandomCoinMaker>>,
+    echo_vote_aggregators: HashMap<(SeqNumber, SeqNumber), Box<RBCProofMaker>>,
+    ready_vote_aggregators: HashMap<(SeqNumber, SeqNumber), Box<RBCProofMaker>>,
+    prepare_vote_aggregators: HashMap<(SeqNumber, SeqNumber), Box<PrepareMaker>>,
 }
 
 impl Aggregator {
     pub fn new(committee: Committee) -> Self {
         Self {
             committee,
-            sharecoin_aggregators: HashMap::new(),
+            share_coin_aggregators: HashMap::new(),
+            echo_vote_aggregators: HashMap::new(),
+            ready_vote_aggregators: HashMap::new(),
+            prepare_vote_aggregators: HashMap::new(),
         }
+    }
+
+    pub fn add_rbc_echo_vote(
+        &mut self,
+        vote: EchoVote,
+        committee: &Committee,
+    ) -> ConsensusResult<Option<RBCProof>> {
+        self.echo_vote_aggregators
+            .entry((vote.epoch, vote.height))
+            .or_insert_with(|| Box::new(RBCProofMaker::new()))
+            .append(
+                vote.epoch,
+                vote.height,
+                vote.author,
+                RBC_ECHO,
+                vote.signature,
+                &self.committee,
+            )
+    }
+
+    pub fn add_rbc_ready_vote(
+        &mut self,
+        vote: ReadyVote,
+        committee: &Committee,
+    ) -> ConsensusResult<Option<RBCProof>> {
+        self.echo_vote_aggregators
+            .entry((vote.epoch, vote.height))
+            .or_insert_with(|| Box::new(RBCProofMaker::new()))
+            .append(
+                vote.epoch,
+                vote.height,
+                vote.author,
+                RBC_READY,
+                vote.signature,
+                &self.committee,
+            )
+    }
+
+    pub fn add_prepare_vote(
+        &mut self,
+        prepare: Prepare,
+        committee: &Committee,
+    ) -> ConsensusResult<Option<(u8, bool)>> {
+        self.prepare_vote_aggregators
+            .entry((prepare.epoch, prepare.height))
+            .or_insert_with(|| Box::new(PrepareMaker::new()))
+            .append(prepare, &self.committee)
     }
 
     pub fn add_aba_share_coin(
@@ -32,16 +85,111 @@ impl Aggregator {
         share: RandomnessShare,
         pk_set: &PublicKeySet,
     ) -> ConsensusResult<Option<usize>> {
-        self.sharecoin_aggregators
+        self.share_coin_aggregators
             .entry((share.epoch, share.height, share.round))
             .or_insert_with(|| Box::new(RandomCoinMaker::new()))
             .append(share, &self.committee, pk_set)
     }
 
     pub fn cleanup_aba_share_coin(&mut self, epoch: &SeqNumber, height: &SeqNumber) {
-        self.sharecoin_aggregators.retain(|(e, h, _), _| {
+        self.share_coin_aggregators.retain(|(e, h, _), _| {
             e * (MAX_BLOCK_BUFFER as u64) + h >= epoch * (MAX_BLOCK_BUFFER as u64) + height
         });
+    }
+}
+
+struct RBCProofMaker {
+    weight: Stake,
+    votes: Vec<(PublicKey, Signature)>,
+    used: HashSet<PublicKey>,
+}
+
+impl RBCProofMaker {
+    pub fn new() -> Self {
+        Self {
+            weight: 0,
+            votes: Vec::new(),
+            used: HashSet::new(),
+        }
+    }
+
+    /// Try to append a signature to a (partial) quorum.
+    pub fn append(
+        &mut self,
+        epoch: SeqNumber,
+        height: SeqNumber,
+        author: PublicKey,
+        tag: u8,
+        siganture: Signature,
+        committee: &Committee,
+    ) -> ConsensusResult<Option<RBCProof>> {
+        // Ensure it is the first time this authority votes.
+        ensure!(
+            self.used.insert(author),
+            ConsensusError::AuthorityReuseinCoin(author)
+        );
+        self.votes.push((author, siganture));
+        self.weight += committee.stake(&author);
+
+        if self.weight == committee.quorum_threshold()
+            || (tag == RBC_READY && self.weight == committee.random_coin_threshold())
+        {
+            let proof = RBCProof {
+                epoch,
+                height,
+                votes: self.votes.clone(),
+                tag,
+            };
+            return Ok(Some(proof));
+        }
+        Ok(None)
+    }
+}
+
+struct PrepareMaker {
+    optnum: Stake,
+    pesnum: Stake,
+    used: HashSet<PublicKey>,
+}
+
+impl PrepareMaker {
+    pub fn new() -> Self {
+        Self {
+            optnum: 0,
+            pesnum: 0,
+            used: HashSet::new(),
+        }
+    }
+
+    /// Try to append a signature to a (partial) quorum.
+    pub fn append(
+        &mut self,
+        prepare: Prepare,
+        committee: &Committee,
+    ) -> ConsensusResult<Option<(u8, bool)>> {
+        // Ensure it is the first time this authority votes.
+        let author = prepare.author;
+        ensure!(
+            self.used.insert(author),
+            ConsensusError::AuthorityReuseinCoin(author)
+        );
+        if prepare.val == OPT {
+            self.optnum += committee.stake(&author)
+        } else {
+            self.pesnum += committee.stake(&author)
+        }
+        let total = self.optnum + self.pesnum;
+
+        if total == committee.quorum_threshold() {
+            if self.optnum >= committee.random_coin_threshold() {
+                return Ok(Some((OPT, true)));
+            } else if self.optnum > 0 {
+                return Ok(Some((OPT, false)));
+            }
+
+            return Ok(Some((PES, false)));
+        }
+        Ok(None)
     }
 }
 

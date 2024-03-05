@@ -1,7 +1,7 @@
 #[macro_use]
 mod error;
 mod aggregator;
-mod commiter;
+mod commitor;
 mod config;
 mod consensus;
 mod core;

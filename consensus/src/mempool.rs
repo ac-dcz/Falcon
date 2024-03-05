@@ -1,6 +1,7 @@
 use crate::core::SeqNumber;
 use crate::error::{ConsensusError, ConsensusResult};
 use crate::messages::Block;
+use crate::Committee;
 use crypto::Digest;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot;
@@ -40,6 +41,7 @@ impl MempoolDriver {
             .expect("Failed to receive payload from mempool")
     }
 
+    //验证mempool是否已经收到了区块
     pub async fn verify(&mut self, block: Block) -> ConsensusResult<bool> {
         let (sender, receiver) = oneshot::channel();
         let message = ConsensusMempoolMessage::Verify(Box::new(block), sender);
@@ -57,28 +59,9 @@ impl MempoolDriver {
         }
     }
 
-    pub async fn cleanup(&mut self, b0: &Block, b1: &Block, block: &Block) {
-        let digests = b0
-            .payload
-            .iter()
-            .cloned()
-            .chain(b1.payload.iter().cloned())
-            .chain(block.payload.iter().cloned())
-            .collect();
-        let message = ConsensusMempoolMessage::Cleanup(digests, block.round);
-        self.mempool_channel
-            .send(message)
-            .await
-            .expect("Failed to send message to mempool");
-    }
-
-    pub async fn cleanup_async(&mut self, b0: &Block) {
-        let digests = b0
-            .payload
-            .iter()
-            .cloned()
-            .collect();
-        let message = ConsensusMempoolMessage::Cleanup(digests, b0.round);
+    pub async fn cleanup(&mut self, b0: &Block, committee: &Committee) {
+        let digests = b0.payload.iter().cloned().collect();
+        let message = ConsensusMempoolMessage::Cleanup(digests, b0.rank(committee) as SeqNumber);
         self.mempool_channel
             .send(message)
             .await

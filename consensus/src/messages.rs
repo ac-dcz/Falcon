@@ -1,12 +1,11 @@
-use crate::commiter::MAX_BLOCK_BUFFER;
+use crate::commitor::MAX_BLOCK_BUFFER;
 use crate::config::Committee;
-use crate::core::{Bool, HeightNumber, SeqNumber};
+use crate::core::SeqNumber;
 use crate::error::{ConsensusError, ConsensusResult};
 use crypto::{Digest, Hash, PublicKey, Signature, SignatureService};
 use ed25519_dalek::Digest as _;
 use ed25519_dalek::Sha512;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashSet};
 use std::convert::TryInto;
 use std::fmt;
 use threshold_crypto::{PublicKeySet, SignatureShare};
@@ -88,7 +87,7 @@ impl fmt::Debug for Block {
     fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
         write!(
             f,
-            "{}: B(author {}, view {},  height {}, payload_len {})",
+            "{}: B(author {}, epoch {},  height {}, payload_len {})",
             self.digest(),
             self.author,
             self.epoch,
@@ -102,7 +101,7 @@ impl fmt::Display for Block {
     fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
         write!(
             f,
-            "{}: B(author {}, view {},  height {}, payload_len {})",
+            "{}: B(author {}, epoch {},  height {}, payload_len {})",
             self.digest(),
             self.author,
             self.epoch,
@@ -114,57 +113,300 @@ impl fmt::Display for Block {
 
 /************************** RBC Struct ************************************/
 #[derive(Serialize, Deserialize, Default, Clone)]
-pub struct EchoVote {}
+pub struct EchoVote {
+    pub author: PublicKey,
+    pub epoch: SeqNumber,
+    pub height: SeqNumber,
+    pub digest: Digest,
+    pub signature: Signature,
+}
+
+impl EchoVote {
+    pub async fn new(
+        author: PublicKey,
+        epoch: SeqNumber,
+        height: SeqNumber,
+        block: &Block,
+        mut signature_service: SignatureService,
+    ) -> Self {
+        let mut vote = Self {
+            author,
+            epoch,
+            height,
+            digest: block.digest(),
+            signature: Signature::default(),
+        };
+        vote.signature = signature_service.request_signature(vote.digest()).await;
+        return vote;
+    }
+
+    pub fn verify(&self, committee: &Committee) -> ConsensusResult<()> {
+        // Ensure the authority has voting rights.
+        let voting_rights = committee.stake(&self.author);
+        ensure!(
+            voting_rights > 0,
+            ConsensusError::UnknownAuthority(self.author)
+        );
+
+        // Check the signature.
+        self.signature.verify(&self.digest(), &self.author)?;
+
+        Ok(())
+    }
+
+    pub fn rank(&self, committee: &Committee) -> usize {
+        let r =
+            ((self.epoch as usize) * committee.size() + (self.height as usize)) % MAX_BLOCK_BUFFER;
+        r
+    }
+}
+
+impl Hash for EchoVote {
+    fn digest(&self) -> Digest {
+        let mut hasher = Sha512::new();
+        hasher.update(self.author.0);
+        hasher.update(self.epoch.to_le_bytes());
+        hasher.update(self.height.to_le_bytes());
+        hasher.update(self.digest);
+        Digest(hasher.finalize().as_slice()[..32].try_into().unwrap())
+    }
+}
+
 impl fmt::Debug for EchoVote {
     fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
         write!(
             f,
-            // "{}: B(author {}, view {},  height {}, payload_len {})",
-            // self.digest(),
-            // self.author,
-            // self.epoch,
-            // self.height,
-            // self.payload.iter().map(|x| x.size()).sum::<usize>(),
-            ""
+            "{}: EchoVote(author {}, epoch {},  height {})",
+            self.digest(),
+            self.author,
+            self.epoch,
+            self.height,
         )
     }
 }
+
+impl fmt::Display for EchoVote {
+    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+        write!(
+            f,
+            "{}: EchoVote(author {}, epoch {},  height {})",
+            self.digest(),
+            self.author,
+            self.epoch,
+            self.height,
+        )
+    }
+}
+
 #[derive(Serialize, Deserialize, Default, Clone)]
-pub struct ReadyVote {}
+pub struct ReadyVote {
+    pub author: PublicKey,
+    pub epoch: SeqNumber,
+    pub height: SeqNumber,
+    pub digest: Digest,
+    pub signature: Signature,
+}
+
+impl ReadyVote {
+    pub async fn new(
+        author: PublicKey,
+        epoch: SeqNumber,
+        height: SeqNumber,
+        block: &Block,
+        mut signature_service: SignatureService,
+    ) -> Self {
+        let mut vote = Self {
+            author,
+            epoch,
+            height,
+            digest: block.digest(),
+            signature: Signature::default(),
+        };
+        vote.signature = signature_service.request_signature(vote.digest()).await;
+        return vote;
+    }
+
+    pub fn verify(&self, committee: &Committee) -> ConsensusResult<()> {
+        // Ensure the authority has voting rights.
+        let voting_rights = committee.stake(&self.author);
+        ensure!(
+            voting_rights > 0,
+            ConsensusError::UnknownAuthority(self.author)
+        );
+
+        // Check the signature.
+        self.signature.verify(&self.digest(), &self.author)?;
+
+        Ok(())
+    }
+
+    pub fn rank(&self, committee: &Committee) -> usize {
+        let r =
+            ((self.epoch as usize) * committee.size() + (self.height as usize)) % MAX_BLOCK_BUFFER;
+        r
+    }
+}
+
+impl Hash for ReadyVote {
+    fn digest(&self) -> Digest {
+        let mut hasher = Sha512::new();
+        hasher.update(self.author.0);
+        hasher.update(self.epoch.to_le_bytes());
+        hasher.update(self.height.to_le_bytes());
+        hasher.update(self.digest);
+        Digest(hasher.finalize().as_slice()[..32].try_into().unwrap())
+    }
+}
+
 impl fmt::Debug for ReadyVote {
     fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
         write!(
             f,
-            // "{}: B(author {}, view {},  height {}, payload_len {})",
-            // self.digest(),
-            // self.author,
-            // self.epoch,
-            // self.height,
-            // self.payload.iter().map(|x| x.size()).sum::<usize>(),
-            ""
+            "{}: ReadyVote(author {}, epoch {},  height {})",
+            self.digest(),
+            self.author,
+            self.epoch,
+            self.height,
         )
     }
 }
+
+impl fmt::Display for ReadyVote {
+    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+        write!(
+            f,
+            "{}: ReadyVote(author {}, epoch {},  height {})",
+            self.digest(),
+            self.author,
+            self.epoch,
+            self.height,
+        )
+    }
+}
+
 #[derive(Serialize, Deserialize, Default, Clone)]
-pub struct RBCProof {}
+pub struct RBCProof {
+    pub epoch: SeqNumber,
+    pub height: SeqNumber,
+    pub votes: Vec<(PublicKey, Signature)>,
+    pub tag: u8,
+}
+
+impl RBCProof {
+    pub fn new(
+        epoch: SeqNumber,
+        height: SeqNumber,
+        votes: Vec<(PublicKey, Signature)>,
+        tag: u8,
+    ) -> Self {
+        Self {
+            epoch,
+            height,
+            votes,
+            tag,
+        }
+    }
+
+    pub fn rank(&self, committee: &Committee) -> usize {
+        let r =
+            ((self.epoch as usize) * committee.size() + (self.height as usize)) % MAX_BLOCK_BUFFER;
+        r
+    }
+}
+
+impl fmt::Debug for RBCProof {
+    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+        write!(
+            f,
+            "RBCProof(epoch {}, height {},tag {})",
+            self.epoch, self.height, self.tag,
+        )
+    }
+}
+
+impl fmt::Display for RBCProof {
+    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+        write!(
+            f,
+            "RBCProof(epoch {},  height {},tag {})",
+            self.epoch, self.height, self.tag,
+        )
+    }
+}
 
 /************************** RBC Struct ************************************/
 
 /************************** prepare Struct ************************************/
 #[derive(Serialize, Deserialize, Default, Clone)]
-pub struct Prepare {}
+pub struct Prepare {
+    pub author: PublicKey,
+    pub epoch: SeqNumber,
+    pub height: SeqNumber,
+    pub val: u8,
+    pub signature: Signature,
+}
+
+impl Prepare {
+    pub async fn new(
+        author: PublicKey,
+        epoch: SeqNumber,
+        height: SeqNumber,
+        val: u8,
+        mut signature_service: SignatureService,
+    ) -> Self {
+        let mut prepare = Self {
+            author,
+            epoch,
+            height,
+            val,
+            signature: Signature::default(),
+        };
+        prepare.signature = signature_service.request_signature(prepare.digest()).await;
+        return prepare;
+    }
+
+    pub fn verify(&self, committee: &Committee) -> ConsensusResult<()> {
+        // Ensure the authority has voting rights.
+        let voting_rights = committee.stake(&self.author);
+        ensure!(
+            voting_rights > 0,
+            ConsensusError::UnknownAuthority(self.author)
+        );
+
+        // Check the signature.
+        self.signature.verify(&self.digest(), &self.author)?;
+
+        Ok(())
+    }
+
+    pub fn rank(&self, committee: &Committee) -> usize {
+        let r =
+            ((self.epoch as usize) * committee.size() + (self.height as usize)) % MAX_BLOCK_BUFFER;
+        r
+    }
+}
+
+impl Hash for Prepare {
+    fn digest(&self) -> Digest {
+        let mut hasher = Sha512::new();
+        hasher.update(self.author.0);
+        hasher.update(self.epoch.to_le_bytes());
+        hasher.update(self.height.to_le_bytes());
+        hasher.update(self.val.to_le_bytes());
+        Digest(hasher.finalize().as_slice()[..32].try_into().unwrap())
+    }
+}
 
 impl fmt::Debug for Prepare {
     fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
         write!(
             f,
-            // "{}: B(author {}, view {},  height {}, payload_len {})",
-            // self.digest(),
-            // self.author,
-            // self.epoch,
-            // self.height,
-            // self.payload.iter().map(|x| x.size()).sum::<usize>(),
-            ""
+            "{}: Prepare(author {}, epoch {},  height {}, val {})",
+            self.digest(),
+            self.author,
+            self.epoch,
+            self.height,
+            self.val
         )
     }
 }
@@ -209,6 +451,12 @@ impl ABAVal {
         self.signature.verify(&self.digest(), &self.author)?;
         Ok(())
     }
+
+    pub fn rank(&self, committee: &Committee) -> usize {
+        let r =
+            ((self.epoch as usize) * committee.size() + (self.height as usize)) % MAX_BLOCK_BUFFER;
+        r
+    }
 }
 
 impl Hash for ABAVal {
@@ -226,8 +474,18 @@ impl fmt::Debug for ABAVal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "ABAVal(round {},phase {},val {})",
-            self.round, self.phase, self.val
+            "ABAVal(author{},epoch {},height {},round {},,phase {},val {})",
+            self.author, self.epoch, self.height, self.round, self.phase, self.val
+        )
+    }
+}
+
+impl fmt::Display for ABAVal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "ABAVal(author{},epoch {},height {},round {},,phase {},val {})",
+            self.author, self.epoch, self.height, self.round, self.phase, self.val
         )
     }
 }
@@ -267,6 +525,12 @@ impl ABAOutput {
         self.signature.verify(&self.digest(), &self.author)?;
         Ok(())
     }
+
+    pub fn rank(&self, committee: &Committee) -> usize {
+        let r =
+            ((self.epoch as usize) * committee.size() + (self.height as usize)) % MAX_BLOCK_BUFFER;
+        r
+    }
 }
 
 impl Hash for ABAOutput {
@@ -284,8 +548,8 @@ impl fmt::Debug for ABAOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "ABAOutput(author {},height {},round {},val {})",
-            self.author, self.height, self.round, self.val
+            "ABAOutput(author {},epoch {},height {},round {},val {})",
+            self.author, self.epoch, self.height, self.round, self.val
         )
     }
 }
@@ -295,8 +559,8 @@ impl fmt::Debug for ABAOutput {
 /************************** Share Coin Struct ************************************/
 #[derive(Clone, Serialize, Deserialize)]
 pub struct RandomnessShare {
-    pub height: SeqNumber,
     pub epoch: SeqNumber,
+    pub height: SeqNumber,
     pub round: SeqNumber,
     pub author: PublicKey,
     pub signature_share: SignatureShare,
@@ -364,4 +628,4 @@ impl fmt::Debug for RandomnessShare {
         )
     }
 }
-/************************** Share Coin Struct ************************************/
+/************************** Share Coin Struct **************************/

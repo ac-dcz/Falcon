@@ -36,12 +36,12 @@ fn try_to_commit(
     cur_ind
 }
 
-pub struct Committer {
+pub struct Commitor {
     tx_block: Sender<Block>,
     tx_filter: Sender<usize>,
 }
 
-impl Committer {
+impl Commitor {
     pub fn new(tx_commit: Sender<Block>, committee: &Committee) -> Self {
         // cur_indx: usize,
         // buffer: Vec<Option<Block>>,

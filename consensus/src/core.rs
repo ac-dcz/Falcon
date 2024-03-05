@@ -1,9 +1,14 @@
+use std::collections::HashMap;
+
 use crate::aggregator::Aggregator;
+use crate::commitor::Commitor;
 use crate::config::{Committee, Parameters};
 use crate::error::{ConsensusError, ConsensusResult};
 use crate::filter::FilterInput;
 use crate::mempool::MempoolDriver;
-use crate::messages::{ABAOutput, ABAVal, Block, EchoVote, Prepare, RandomnessShare, ReadyVote};
+use crate::messages::{
+    ABAOutput, ABAVal, Block, EchoVote, Prepare, RBCProof, RandomnessShare, ReadyVote,
+};
 use crate::synchronizer::Synchronizer;
 use crate::timer::Timer;
 use async_recursion::async_recursion;
@@ -27,6 +32,15 @@ pub mod core_tests;
 pub type SeqNumber = u64; // For both round and view
 pub type HeightNumber = u8; // height={1,2} in fallback chain, height=0 for sync block
 pub type Bool = u8;
+
+pub const RBC_ECHO: u8 = 0;
+pub const RBC_READY: u8 = 1;
+
+pub const VAL_PHASE: u8 = 0;
+pub const MUX_PHASE: u8 = 1;
+
+pub const OPT: u8 = 0;
+pub const PES: u8 = 1;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum ConsensusMessage {
@@ -58,6 +72,9 @@ pub struct Core {
     height: SeqNumber,
     timer: Timer,
     aggregator: Aggregator,
+    commitor: Commitor,
+    rank_to_digest: HashMap<usize, Digest>,
+    rbc_proofs: HashMap<(SeqNumber, SeqNumber, u8), RBCProof>,
 }
 
 impl Core {
@@ -77,6 +94,7 @@ impl Core {
     ) -> Self {
         let aggregator = Aggregator::new(committee.clone());
         let timer = Timer::new(parameters.timeout_delay);
+        let commitor = Commitor::new(commit_channel.clone(), &committee);
         Self {
             name,
             committee,
@@ -93,6 +111,9 @@ impl Core {
             height: committee.id(name) as u64,
             timer,
             aggregator,
+            commitor,
+            rank_to_digest: HashMap::new(),
+            rbc_proofs: HashMap::new(),
         }
     }
 
