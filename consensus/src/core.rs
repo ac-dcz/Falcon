@@ -13,6 +13,8 @@ use crate::synchronizer::Synchronizer;
 use crate::timer::Timer;
 use async_recursion::async_recursion;
 use crypto::{PublicKey, SignatureService};
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
 use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use store::Store;
@@ -41,12 +43,14 @@ pub enum ConsensusMessage {
     RBCEchoMsg(EchoVote),
     RBCReadyMsg(ReadyVote),
     ABAValMsg(ABAVal),
+    ABAMuxMsg(ABAVal),
     ABACoinShareMsg(RandomnessShare),
     ABAOutputMsg(ABAOutput),
     PrePareMsg(Prepare),
     LoopBackMsg(SeqNumber, SeqNumber),
     SyncRequestMsg(SeqNumber, SeqNumber, PublicKey),
     SyncReplyMsg(Block),
+    RBCTimeDelay(SeqNumber),
 }
 
 pub struct Core {
@@ -62,9 +66,11 @@ pub struct Core {
     network_filter: Sender<FilterInput>,
     commit_channel: Sender<Block>,
     rx_commit: Receiver<Block>,
+    tx_time: Sender<SeqNumber>,
+    rx_time: Receiver<SeqNumber>,
     epoch: SeqNumber,
     height: SeqNumber,
-    timer: Timer,
+    timer: Timer, //每个epoch开启
     aggregator: Aggregator,
     commitor: Commitor,
     buffers: HashMap<(SeqNumber, SeqNumber), bool>,
@@ -72,6 +78,13 @@ pub struct Core {
     rbc_proofs: HashMap<(SeqNumber, SeqNumber, u8), RBCProof>,  //需要update
     rbc_ready: HashSet<(SeqNumber, SeqNumber)>,
     rbc_outputs: HashMap<(SeqNumber, SeqNumber), bool>,
+    prepare_flags: HashSet<(SeqNumber, SeqNumber)>,
+    aba_values: HashMap<(SeqNumber, SeqNumber, SeqNumber), [HashSet<PublicKey>; 2]>,
+    aba_values_flag: HashMap<(SeqNumber, SeqNumber, SeqNumber), [bool; 2]>,
+    aba_mux_values: HashMap<(SeqNumber, SeqNumber, SeqNumber), [HashSet<PublicKey>; 2]>,
+    aba_mux_flags: HashMap<(SeqNumber, SeqNumber, SeqNumber), [bool; 2]>,
+    aba_outputs: HashMap<(SeqNumber, SeqNumber, SeqNumber), HashSet<PublicKey>>,
+    aba_ends: HashMap<(SeqNumber, SeqNumber), bool>,
 }
 
 impl Core {
@@ -90,6 +103,7 @@ impl Core {
         commit_channel: Sender<Block>,
     ) -> Self {
         let (tx_commit, rx_commit): (_, Receiver<Block>) = channel(10000);
+        let (tx_time, rx_time): (_, Receiver<SeqNumber>) = channel(10000);
         let aggregator = Aggregator::new(committee.clone());
         let timer = Timer::new(parameters.timeout_delay);
         let commitor = Commitor::new(tx_commit.clone(), committee.clone());
@@ -105,6 +119,8 @@ impl Core {
             mempool_driver,
             synchronizer,
             network_filter,
+            tx_time,
+            rx_time,
             rx_commit,
             commit_channel,
             core_channel,
@@ -116,7 +132,19 @@ impl Core {
             rbc_blocks: HashMap::new(),
             rbc_ready: HashSet::new(),
             rbc_outputs: HashMap::new(),
+            prepare_flags: HashSet::new(),
+            aba_values: HashMap::new(),
+            aba_mux_values: HashMap::new(),
+            aba_values_flag: HashMap::new(),
+            aba_mux_flags: HashMap::new(),
+            aba_outputs: HashMap::new(),
+            aba_ends: HashMap::new(),
         }
+    }
+
+    async fn delay_rbc_time(epoch: SeqNumber, time_out: SeqNumber) -> SeqNumber {
+        sleep(Duration::from_millis(time_out)).await;
+        epoch
     }
 
     pub fn rank(epoch: SeqNumber, height: SeqNumber, committee: &Committee) -> usize {
@@ -356,25 +384,27 @@ impl Core {
         height: SeqNumber,
         val: u8,
     ) -> ConsensusResult<()> {
-        //启动prepare投票
-        let prepare = Prepare::new(
-            self.name,
-            epoch,
-            height,
-            val,
-            self.signature_service.clone(),
-        )
-        .await;
-        let message = ConsensusMessage::PrePareMsg(prepare.clone());
-        Synchronizer::transmit(
-            message,
-            &self.name,
-            None,
-            &self.network_filter,
-            &self.committee,
-        )
-        .await?;
-        self.handle_prepare(&prepare).await?;
+        if self.prepare_flags.insert((epoch, height)) {
+            //启动prepare投票
+            let prepare = Prepare::new(
+                self.name,
+                epoch,
+                height,
+                val,
+                self.signature_service.clone(),
+            )
+            .await;
+            let message = ConsensusMessage::PrePareMsg(prepare.clone());
+            Synchronizer::transmit(
+                message,
+                &self.name,
+                None,
+                &self.network_filter,
+                &self.committee,
+            )
+            .await?;
+            self.handle_prepare(&prepare).await?;
+        }
         Ok(())
     }
 
@@ -413,20 +443,235 @@ impl Core {
     /************* PrePare Protocol ******************/
 
     /************* ABA Protocol ******************/
+    #[async_recursion]
     async fn handle_aba_val(&mut self, aba_val: &ABAVal) -> ConsensusResult<()> {
+        aba_val.verify()?;
+
+        let values = self
+            .aba_values
+            .entry((aba_val.epoch, aba_val.height, aba_val.round))
+            .or_insert([HashSet::new(), HashSet::new()]);
+
+        if !values[aba_val.val].insert(aba_val.author) {
+            return Ok(());
+        }
+
+        let mut nums = values[aba_val.val].len() as Stake;
+        if nums == self.committee.random_coin_threshold()
+            && !values[aba_val.val].contains(&self.name)
+        {
+            //f+1
+            let other = ABAVal::new(
+                self.name,
+                aba_val.epoch,
+                aba_val.height,
+                aba_val.round,
+                aba_val.val,
+                VAL_PHASE,
+                self.signature_service.clone(),
+            )
+            .await;
+            let message = ConsensusMessage::ABAValMsg(other);
+            Synchronizer::transmit(
+                message,
+                &self.name,
+                None,
+                &self.network_filter,
+                &self.committee,
+            )
+            .await?;
+            values[aba_val.val].insert(self.name);
+            nums += 1;
+        }
+
+        if nums == self.committee.quorum_threshold() {
+            let values_flag = self
+                .aba_values_flag
+                .entry((aba_val.epoch, aba_val.height, aba_val.round))
+                .or_insert([false, false]);
+
+            if !values_flag[0] && !values_flag[1] {
+                values_flag[aba_val.val] = true;
+                let mux = ABAVal::new(
+                    self.name,
+                    aba_val.epoch,
+                    aba_val.height,
+                    aba_val.round,
+                    aba_val.val,
+                    MUX_PHASE,
+                    self.signature_service.clone(),
+                )
+                .await;
+                let message = ConsensusMessage::ABAValMsg(mux.clone());
+                Synchronizer::transmit(
+                    message,
+                    &self.name,
+                    None,
+                    &self.network_filter,
+                    &self.committee,
+                )
+                .await?;
+                self.handle_aba_mux(&mux).await?;
+            } else {
+                values_flag[aba_val.val] = true;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_aba_mux(&mut self, aba_mux: &ABAVal) -> ConsensusResult<()> {
+        aba_mux.verify()?;
+        let mux_flags = self
+            .aba_mux_flags
+            .entry((aba_mux.epoch, aba_mux.height, aba_mux.round))
+            .or_insert([false, false]);
+
+        if !mux_flags[0] && !mux_flags[0] {
+            let values = self
+                .aba_mux_values
+                .entry((aba_mux.epoch, aba_mux.height, aba_mux.round))
+                .or_insert([HashSet::new(), HashSet::new()]);
+
+            if values[aba_mux.val].insert(aba_mux.author) {
+                let nums_opt = values[OPT as usize].len();
+                let nums_pes = values[PES as usize].len();
+                if nums_opt + nums_pes >= self.committee.quorum_threshold() as usize {
+                    let value_flags = self
+                        .aba_values_flag
+                        .entry((aba_mux.epoch, aba_mux.height, aba_mux.round))
+                        .or_insert([false, false]);
+                    if value_flags[0] && value_flags[1] {
+                        mux_flags[0] = nums_opt > 0;
+                        mux_flags[1] = nums_opt > 1;
+                    } else if value_flags[0] {
+                        mux_flags[0] = nums_opt >= self.committee.quorum_threshold() as usize;
+                    } else {
+                        mux_flags[1] = nums_pes >= self.committee.quorum_threshold() as usize;
+                    }
+                }
+            }
+
+            if mux_flags[0] || mux_flags[0] {
+                let share = RandomnessShare::new(
+                    aba_mux.epoch,
+                    aba_mux.height,
+                    aba_mux.round,
+                    self.name,
+                    self.signature_service.clone(),
+                )
+                .await;
+                let message = ConsensusMessage::ABACoinShareMsg(share.clone());
+                Synchronizer::transmit(
+                    message,
+                    &self.name,
+                    None,
+                    &self.network_filter,
+                    &self.committee,
+                )
+                .await?;
+                self.handle_aba_share(&share).await?;
+            }
+        }
+
         Ok(())
     }
 
     async fn handle_aba_share(&mut self, share: &RandomnessShare) -> ConsensusResult<()> {
         share.verify(&self.committee, &self.pk_set)?;
-        if let Some(_id) = self
+        if let Some(coin) = self
             .aggregator
             .add_aba_share_coin(share.clone(), &self.pk_set)?
-        {}
+        {
+            let mux_flags = self
+                .aba_mux_flags
+                .entry((share.epoch, share.height, share.round))
+                .or_insert([false, false]);
+            let mut val = coin;
+            if mux_flags[coin] && !mux_flags[coin ^ 1] {
+                self.process_aba_output(share.epoch, share.height, share.round, coin)
+                    .await?;
+            } else if !mux_flags[coin] && mux_flags[coin ^ 1] {
+                val = coin ^ 1;
+            }
+            self.aba_adcance_round(share.epoch, share.height, share.round + 1, val)
+                .await?;
+        }
         Ok(())
     }
 
     async fn handle_aba_output(&mut self, output: &ABAOutput) -> ConsensusResult<()> {
+        Ok(())
+    }
+
+    async fn process_aba_output(
+        &mut self,
+        epoch: SeqNumber,
+        height: SeqNumber,
+        round: SeqNumber,
+        val: usize,
+    ) -> ConsensusResult<()> {
+        let used = self
+            .aba_outputs
+            .entry((epoch, height, round))
+            .or_insert(HashSet::new());
+        if used.insert(self.name) {
+            let output = ABAOutput::new(
+                self.name,
+                epoch,
+                height,
+                round,
+                val,
+                self.signature_service.clone(),
+            )
+            .await;
+            let message = ConsensusMessage::ABAOutputMsg(output);
+            Synchronizer::transmit(
+                message,
+                &self.name,
+                None,
+                &self.network_filter,
+                &self.committee,
+            )
+            .await?;
+        }
+
+        self.aba_ends.insert((epoch, height), true);
+
+        if val == OPT {}
+
+        Ok(())
+    }
+
+    async fn aba_adcance_round(
+        &mut self,
+        epoch: SeqNumber,
+        height: SeqNumber,
+        round: SeqNumber,
+        val: usize,
+    ) -> ConsensusResult<()> {
+        if !*self.aba_ends.entry((epoch, height)).or_insert(false) {
+            let aba_val = ABAVal::new(
+                self.name,
+                epoch,
+                height,
+                round,
+                val,
+                VAL_PHASE,
+                self.signature_service.clone(),
+            )
+            .await;
+            let message = ConsensusMessage::ABAValMsg(aba_val.clone());
+            Synchronizer::transmit(
+                message,
+                &self.name,
+                None,
+                &self.network_filter,
+                &self.committee,
+            )
+            .await?;
+            self.handle_aba_val(&aba_val).await?;
+        }
         Ok(())
     }
     /************* ABA Protocol ******************/
@@ -444,6 +689,8 @@ impl Core {
 
         // This is the main loop: it processes incoming blocks and votes,
         // and receive timeout notifications from our Timeout Manager.
+        let total_nums = self.committee.size() as SeqNumber;
+        let mut pending_rbc = FuturesUnordered::new();
         loop {
             let result = tokio::select! {
                 Some(message) = self.core_channel.recv() => {
@@ -452,16 +699,29 @@ impl Core {
                         ConsensusMessage::RBCEchoMsg(evote)=> self.handle_rbc_echo(&evote).await,
                         ConsensusMessage::RBCReadyMsg(rvote)=> self.handle_rbc_ready(&rvote).await,
                         ConsensusMessage::ABAValMsg(val)=>self.handle_aba_val(&val).await,
+                        ConsensusMessage::ABAMuxMsg(mux)=> self.handle_aba_mux(&mux).await,
                         ConsensusMessage::ABACoinShareMsg(share)=>self.handle_aba_share(&share).await,
                         ConsensusMessage::ABAOutputMsg(output)=>self.handle_aba_output(&output).await,
                         ConsensusMessage::PrePareMsg(prepare)=>self.handle_prepare(&prepare).await,
                         ConsensusMessage::LoopBackMsg(epoch,height) => self.process_rbc_output(epoch,height).await,  //有问题/////////////////
                         ConsensusMessage::SyncRequestMsg(epoch,height, sender) => self.handle_sync_request(epoch,height, sender).await,//收到其他节点请求区块
                         ConsensusMessage::SyncReplyMsg(block) => self.handle_sync_reply(&block).await,   //收到区块后存储
+                        ConsensusMessage::RBCTimeDelay(epoch) =>{
+                            pending_rbc.push(Self::delay_rbc_time(epoch, self.parameters.timeout_delay));
+                            Ok(())
+                        }
                     }
                 },
                 Some(block) = self.rx_commit.recv()=>{
                     self.commit_block(&block)
+                },
+                Some(epoch) = pending_rbc.next() =>{//超时处理
+                    for height in 0..total_nums{
+                        if !self.prepare_flags.contains(&(epoch,height)){
+                            let _ =self.invoke_prepare(epoch, height, PES).await; ////?
+                        }
+                    }
+                    Ok(())
                 },
                 else => break,
             };

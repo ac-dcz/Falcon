@@ -474,7 +474,7 @@ impl fmt::Debug for ABAVal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "ABAVal(author{},epoch {},height {},round {},,phase {},val {})",
+            "ABAVal(author{},epoch {},height {},round {},phase {},val {})",
             self.author, self.epoch, self.height, self.round, self.phase, self.val
         )
     }
@@ -484,7 +484,7 @@ impl fmt::Display for ABAVal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "ABAVal(author{},epoch {},height {},round {},,phase {},val {})",
+            "ABAVal(author{},epoch {},height {},round {},phase {},val {})",
             self.author, self.epoch, self.height, self.round, self.phase, self.val
         )
     }
@@ -568,8 +568,8 @@ pub struct RandomnessShare {
 
 impl RandomnessShare {
     pub async fn new(
-        height: SeqNumber,
         epoch: SeqNumber,
+        height: SeqNumber,
         round: SeqNumber,
         author: PublicKey,
         mut signature_service: SignatureService,
