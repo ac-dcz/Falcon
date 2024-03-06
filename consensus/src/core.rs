@@ -10,7 +10,6 @@ use crate::messages::{
     ABAOutput, ABAVal, Block, EchoVote, Prepare, RBCProof, RandomnessShare, ReadyVote,
 };
 use crate::synchronizer::Synchronizer;
-use crate::timer::Timer;
 use async_recursion::async_recursion;
 use crypto::{PublicKey, SignatureService};
 use futures::stream::FuturesUnordered;
@@ -62,15 +61,13 @@ pub struct Core {
     pk_set: PublicKeySet,
     mempool_driver: MempoolDriver,
     synchronizer: Synchronizer,
-    core_channel: Receiver<ConsensusMessage>,
+    tx_core: Sender<ConsensusMessage>,
+    rx_core: Receiver<ConsensusMessage>,
     network_filter: Sender<FilterInput>,
     commit_channel: Sender<Block>,
     rx_commit: Receiver<Block>,
-    tx_time: Sender<SeqNumber>,
-    rx_time: Receiver<SeqNumber>,
     epoch: SeqNumber,
     height: SeqNumber,
-    timer: Timer, //每个epoch开启
     aggregator: Aggregator,
     commitor: Commitor,
     buffers: HashMap<(SeqNumber, SeqNumber), bool>,
@@ -98,14 +95,13 @@ impl Core {
         store: Store,
         mempool_driver: MempoolDriver,
         synchronizer: Synchronizer,
-        core_channel: Receiver<ConsensusMessage>,
+        tx_core: Sender<ConsensusMessage>,
+        rx_core: Receiver<ConsensusMessage>,
         network_filter: Sender<FilterInput>,
         commit_channel: Sender<Block>,
     ) -> Self {
         let (tx_commit, rx_commit): (_, Receiver<Block>) = channel(10000);
-        let (tx_time, rx_time): (_, Receiver<SeqNumber>) = channel(10000);
         let aggregator = Aggregator::new(committee.clone());
-        let timer = Timer::new(parameters.timeout_delay);
         let commitor = Commitor::new(tx_commit.clone(), committee.clone());
         Self {
             epoch: 0,
@@ -119,12 +115,10 @@ impl Core {
             mempool_driver,
             synchronizer,
             network_filter,
-            tx_time,
-            rx_time,
             rx_commit,
             commit_channel,
-            core_channel,
-            timer,
+            tx_core,
+            rx_core,
             aggregator,
             commitor,
             buffers: HashMap::new(),
@@ -370,11 +364,14 @@ impl Core {
 
     async fn rbc_advance(&mut self) -> ConsensusResult<()> {
         self.epoch += 1;
+        //清除之前的缓存
         self.generate_rbc_proposal().await?; //继续下一轮发送
-                                             //清除之前的缓存
+        let message = ConsensusMessage::RBCTimeDelay(self.epoch);
+        if let Err(e) = self.tx_core.send(message).await {
+            panic!("Failed to send ConsensusMessage to core: {}", e);
+        }
         Ok(())
     }
-
     /************* RBC Protocol ******************/
 
     /************* PrePare Protocol ******************/
@@ -601,6 +598,37 @@ impl Core {
     }
 
     async fn handle_aba_output(&mut self, output: &ABAOutput) -> ConsensusResult<()> {
+        output.verify()?;
+        let used = self
+            .aba_outputs
+            .entry((output.epoch, output.height, output.round))
+            .or_insert(HashSet::new());
+        if used.insert(output.author) && used.len() == self.committee.size() as usize {
+            if !used.contains(&self.name) {
+                let output = ABAOutput::new(
+                    self.name,
+                    output.epoch,
+                    output.height,
+                    output.round,
+                    output.val,
+                    self.signature_service.clone(),
+                )
+                .await;
+                let message = ConsensusMessage::ABAOutputMsg(output);
+                Synchronizer::transmit(
+                    message,
+                    &self.name,
+                    None,
+                    &self.network_filter,
+                    &self.committee,
+                )
+                .await?;
+                used.insert(self.name);
+            }
+            self.process_aba_output(output.epoch, output.height, output.round, output.val)
+                .await?;
+        }
+
         Ok(())
     }
 
@@ -611,6 +639,9 @@ impl Core {
         round: SeqNumber,
         val: usize,
     ) -> ConsensusResult<()> {
+        if *self.aba_ends.entry((epoch, height)).or_insert(false) {
+            return Ok(());
+        }
         let used = self
             .aba_outputs
             .entry((epoch, height, round))
@@ -638,7 +669,13 @@ impl Core {
 
         self.aba_ends.insert((epoch, height), true);
 
-        if val == OPT {}
+        if val == OPT as usize {
+            self.process_rbc_output(epoch, height).await?;
+        } else {
+            self.commitor
+                .filter_block(Self::rank(epoch, height, &self.committee))
+                .await;
+        }
 
         Ok(())
     }
@@ -693,7 +730,7 @@ impl Core {
         let mut pending_rbc = FuturesUnordered::new();
         loop {
             let result = tokio::select! {
-                Some(message) = self.core_channel.recv() => {
+                Some(message) = self.rx_core.recv() => {
                     match message {
                         ConsensusMessage::RBCValMsg(block)=> self.handle_rbc_val(&block).await,
                         ConsensusMessage::RBCEchoMsg(evote)=> self.handle_rbc_echo(&evote).await,

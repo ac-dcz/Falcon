@@ -3,9 +3,6 @@ use std::usize;
 use crate::config::Committee;
 use crate::Block;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
-#[cfg(test)]
-#[path = "tests/timer_tests.rs"]
-pub mod timer_tests;
 
 pub const MAX_BLOCK_BUFFER: usize = 100000;
 
@@ -16,6 +13,7 @@ async fn try_to_commit(
     tx_commit: Sender<Block>,
 ) -> usize {
     let mut data = Vec::new();
+
     loop {
         if let Some(block) = buffer[cur_ind].clone() {
             data.push(block);
@@ -46,9 +44,6 @@ pub struct Commitor {
 
 impl Commitor {
     pub fn new(tx_commit: Sender<Block>, committee: Committee) -> Self {
-        // cur_indx: usize,
-        // buffer: Vec<Option<Block>>,
-        // filter: Vec<bool>,
         let (tx_block, mut rx_block): (_, Receiver<Block>) = channel(10000);
         let (tx_filter, mut rx_filter): (_, Receiver<usize>) = channel(10000);
 

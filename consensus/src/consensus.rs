@@ -82,7 +82,7 @@ impl Consensus {
             committee.clone(),
             store.clone(),
             /* network_filter */ tx_filter.clone(),
-            /* core_channel */ tx_core,
+            /* core_channel */ tx_core.clone(),
             parameters.sync_retry_delay,
         )
         .await;
@@ -99,6 +99,7 @@ impl Consensus {
                     store,
                     mempool_driver,
                     synchronizer,
+                    tx_core,
                     /* core_channel */ rx_core,
                     /* network_filter */ tx_filter,
                     /* commit_channel */ tx_commit,
