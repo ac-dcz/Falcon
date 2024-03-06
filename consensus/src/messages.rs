@@ -212,14 +212,14 @@ impl ReadyVote {
         author: PublicKey,
         epoch: SeqNumber,
         height: SeqNumber,
-        block: &Block,
+        digest: Digest,
         mut signature_service: SignatureService,
     ) -> Self {
         let mut vote = Self {
             author,
             epoch,
             height,
-            digest: block.digest(),
+            digest,
             signature: Signature::default(),
         };
         vote.signature = signature_service.request_signature(vote.digest()).await;

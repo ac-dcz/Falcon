@@ -1,4 +1,3 @@
-use crate::commitor::MAX_BLOCK_BUFFER;
 use crate::config::{Committee, Stake};
 use crate::core::{SeqNumber, OPT, PES, RBC_ECHO, RBC_READY};
 use crate::error::{ConsensusError, ConsensusResult};
@@ -33,11 +32,7 @@ impl Aggregator {
         }
     }
 
-    pub fn add_rbc_echo_vote(
-        &mut self,
-        vote: EchoVote,
-        committee: &Committee,
-    ) -> ConsensusResult<Option<RBCProof>> {
+    pub fn add_rbc_echo_vote(&mut self, vote: EchoVote) -> ConsensusResult<Option<RBCProof>> {
         self.echo_vote_aggregators
             .entry((vote.epoch, vote.height))
             .or_insert_with(|| Box::new(RBCProofMaker::new()))
@@ -51,12 +46,8 @@ impl Aggregator {
             )
     }
 
-    pub fn add_rbc_ready_vote(
-        &mut self,
-        vote: ReadyVote,
-        committee: &Committee,
-    ) -> ConsensusResult<Option<RBCProof>> {
-        self.echo_vote_aggregators
+    pub fn add_rbc_ready_vote(&mut self, vote: ReadyVote) -> ConsensusResult<Option<RBCProof>> {
+        self.ready_vote_aggregators
             .entry((vote.epoch, vote.height))
             .or_insert_with(|| Box::new(RBCProofMaker::new()))
             .append(
@@ -69,11 +60,7 @@ impl Aggregator {
             )
     }
 
-    pub fn add_prepare_vote(
-        &mut self,
-        prepare: Prepare,
-        committee: &Committee,
-    ) -> ConsensusResult<Option<(u8, bool)>> {
+    pub fn add_prepare_vote(&mut self, prepare: Prepare) -> ConsensusResult<Option<(u8, bool)>> {
         self.prepare_vote_aggregators
             .entry((prepare.epoch, prepare.height))
             .or_insert_with(|| Box::new(PrepareMaker::new()))
@@ -91,11 +78,11 @@ impl Aggregator {
             .append(share, &self.committee, pk_set)
     }
 
-    pub fn cleanup_aba_share_coin(&mut self, epoch: &SeqNumber, height: &SeqNumber) {
-        self.share_coin_aggregators.retain(|(e, h, _), _| {
-            e * (MAX_BLOCK_BUFFER as u64) + h >= epoch * (MAX_BLOCK_BUFFER as u64) + height
-        });
-    }
+    // pub fn cleanup_aba_share_coin(&mut self, epoch: &SeqNumber, height: &SeqNumber) {
+    //     self.share_coin_aggregators.retain(|(e, h, _), _| {
+    //         e * (MAX_BLOCK_BUFFER as u64) + h >= epoch * (MAX_BLOCK_BUFFER as u64) + height
+    //     });
+    // }
 }
 
 struct RBCProofMaker {

@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::aggregator::Aggregator;
-use crate::commitor::Commitor;
+use crate::commitor::{Commitor, MAX_BLOCK_BUFFER};
 use crate::config::{Committee, Parameters, Stake};
 use crate::error::{ConsensusError, ConsensusResult};
 use crate::filter::FilterInput;
@@ -44,8 +44,8 @@ pub enum ConsensusMessage {
     ABACoinShareMsg(RandomnessShare),
     ABAOutputMsg(ABAOutput),
     PrePareMsg(Prepare),
-    LoopBackMsg(Block),
-    SyncRequestMsg(usize, PublicKey),
+    LoopBackMsg(SeqNumber, SeqNumber),
+    SyncRequestMsg(SeqNumber, SeqNumber, PublicKey),
     SyncReplyMsg(Block),
 }
 
@@ -71,6 +71,7 @@ pub struct Core {
     rbc_blocks: HashMap<(SeqNumber, SeqNumber), Option<Block>>, //需要update
     rbc_proofs: HashMap<(SeqNumber, SeqNumber, u8), RBCProof>,  //需要update
     rbc_ready: HashSet<(SeqNumber, SeqNumber)>,
+    rbc_outputs: HashMap<(SeqNumber, SeqNumber), bool>,
 }
 
 impl Core {
@@ -88,7 +89,7 @@ impl Core {
         network_filter: Sender<FilterInput>,
         commit_channel: Sender<Block>,
     ) -> Self {
-        let (tx_commit, mut rx_commit): (_, Receiver<Block>) = channel(10000);
+        let (tx_commit, rx_commit): (_, Receiver<Block>) = channel(10000);
         let aggregator = Aggregator::new(committee.clone());
         let timer = Timer::new(parameters.timeout_delay);
         let commitor = Commitor::new(tx_commit.clone(), committee.clone());
@@ -114,7 +115,13 @@ impl Core {
             rbc_proofs: HashMap::new(),
             rbc_blocks: HashMap::new(),
             rbc_ready: HashSet::new(),
+            rbc_outputs: HashMap::new(),
         }
+    }
+
+    pub fn rank(epoch: SeqNumber, height: SeqNumber, committee: &Committee) -> usize {
+        let r = ((epoch as usize) * committee.size() + (height as usize)) % MAX_BLOCK_BUFFER;
+        r
     }
 
     async fn store_block(&mut self, block: &Block) {
@@ -128,7 +135,13 @@ impl Core {
         Ok(())
     }
 
-    async fn handle_sync_request(&mut self, rank: usize, sender: PublicKey) -> ConsensusResult<()> {
+    async fn handle_sync_request(
+        &mut self,
+        epoch: SeqNumber,
+        height: SeqNumber,
+        sender: PublicKey,
+    ) -> ConsensusResult<()> {
+        let rank = Core::rank(epoch, height, &self.committee);
         if let Some(bytes) = self.store.read(rank.to_le_bytes().into()).await? {
             let block = bincode::deserialize(&bytes)?;
             let message = ConsensusMessage::SyncReplyMsg(block);
@@ -141,6 +154,15 @@ impl Core {
             )
             .await?;
         }
+        Ok(())
+    }
+
+    async fn handle_sync_reply(&mut self, block: &Block) -> ConsensusResult<()> {
+        block.verify(&self.committee)?;
+        self.store_block(block).await;
+        self.rbc_blocks
+            .insert((block.epoch, block.height), Some(block.clone()));
+        self.process_rbc_output(block.epoch, block.height).await?;
         Ok(())
     }
 
@@ -196,8 +218,8 @@ impl Core {
             .insert((block.epoch, block.height), Some(block.clone()));
         let vote = EchoVote::new(
             self.name,
-            self.epoch,
-            self.height,
+            block.epoch,
+            block.height,
             block,
             self.signature_service.clone(),
         )
@@ -220,17 +242,14 @@ impl Core {
     async fn handle_rbc_echo(&mut self, vote: &EchoVote) -> ConsensusResult<()> {
         vote.verify(&self.committee)?;
 
-        if let Some(proof) = self
-            .aggregator
-            .add_rbc_echo_vote(vote.clone(), &self.committee)?
-        {
+        if let Some(proof) = self.aggregator.add_rbc_echo_vote(vote.clone())? {
             self.rbc_proofs
                 .insert((proof.epoch, proof.height, proof.tag), proof);
             let ready = ReadyVote::new(
                 self.name,
                 vote.epoch,
                 vote.height,
-                &Block::default(),
+                vote.digest.clone(),
                 self.signature_service.clone(),
             )
             .await;
@@ -253,37 +272,157 @@ impl Core {
     async fn handle_rbc_ready(&mut self, vote: &ReadyVote) -> ConsensusResult<()> {
         vote.verify(&self.committee)?;
 
-        if let Some(proof) = self
-            .aggregator
-            .add_rbc_ready_vote(vote.clone(), &self.committee)?
-        {
+        if let Some(proof) = self.aggregator.add_rbc_ready_vote(vote.clone())? {
             let flag = self.rbc_ready.contains(&(vote.epoch, vote.height));
+
+            self.rbc_proofs
+                .insert((proof.epoch, proof.height, proof.tag), proof.clone());
+
             if !flag && proof.votes.len() as Stake == self.committee.random_coin_threshold() {
-                //发送Ready
-            } else if proof.votes.len() as Stake == self.committee.quorum_threshold() {
-                //启动prepare阶段
+                self.rbc_ready.insert((vote.epoch, vote.height));
+                let ready = ReadyVote::new(
+                    self.name,
+                    vote.epoch,
+                    vote.height,
+                    vote.digest.clone(),
+                    self.signature_service.clone(),
+                )
+                .await;
+                let message = ConsensusMessage::RBCReadyMsg(ready.clone());
+                Synchronizer::transmit(
+                    message,
+                    &self.name,
+                    None,
+                    &self.network_filter,
+                    &self.committee,
+                )
+                .await?;
+                self.handle_rbc_ready(&ready).await?;
+                return Ok(());
             }
-            // self.rbc_proofs
-            //     .insert((proof.epoch, proof.height, proof.tag), proof);
+            self.process_rbc_output(vote.epoch, vote.height).await?;
+            self.invoke_prepare(vote.epoch, vote.height, OPT).await?;
+            self.rbc_advance().await?
         }
 
+        Ok(())
+    }
+
+    async fn process_rbc_output(
+        &mut self,
+        epoch: SeqNumber,
+        height: SeqNumber,
+    ) -> ConsensusResult<()> {
+        //rbc 输出处理
+        /*
+           1. 是否收到RBC的输出？ 没有 => 发送request
+           2. mempool是否收到了所有  payload？ 没有 => loopback
+           3. 缓存入commitor
+        */
+        if *self.rbc_outputs.entry((epoch, height)).or_insert(false) {
+            return Ok(());
+        }
+        if let Some(block) = self.rbc_blocks.entry((epoch, height)).or_insert(None) {
+            if !self.mempool_driver.verify(block.clone()).await? {
+                // debug!(
+                //     "Processing of {} suspended: missing payload",
+                //     block.digest()
+                // );
+                return Ok(());
+            }
+            self.rbc_outputs.insert((epoch, height), true);
+            self.commitor.buffer_block(block.clone()).await;
+        } else {
+            self.synchronizer
+                .block_request(epoch, height, &self.committee)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn rbc_advance(&mut self) -> ConsensusResult<()> {
+        self.epoch += 1;
+        self.generate_rbc_proposal().await?; //继续下一轮发送
+                                             //清除之前的缓存
         Ok(())
     }
 
     /************* RBC Protocol ******************/
 
     /************* PrePare Protocol ******************/
+    async fn invoke_prepare(
+        &mut self,
+        epoch: SeqNumber,
+        height: SeqNumber,
+        val: u8,
+    ) -> ConsensusResult<()> {
+        //启动prepare投票
+        let prepare = Prepare::new(
+            self.name,
+            epoch,
+            height,
+            val,
+            self.signature_service.clone(),
+        )
+        .await;
+        let message = ConsensusMessage::PrePareMsg(prepare.clone());
+        Synchronizer::transmit(
+            message,
+            &self.name,
+            None,
+            &self.network_filter,
+            &self.committee,
+        )
+        .await?;
+        self.handle_prepare(&prepare).await?;
+        Ok(())
+    }
+
     async fn handle_prepare(&mut self, prepare: &Prepare) -> ConsensusResult<()> {
+        prepare.verify(&self.committee)?;
+        if let Some((val, flag)) = self.aggregator.add_prepare_vote(prepare.clone())? {
+            if flag {
+                //可以直接提交
+                self.process_rbc_output(prepare.epoch, prepare.height)
+                    .await?;
+            }
+            //发送ABA
+            let aba_val = ABAVal::new(
+                self.name,
+                prepare.epoch,
+                prepare.height,
+                0,
+                val as usize,
+                VAL_PHASE,
+                self.signature_service.clone(),
+            )
+            .await;
+            let message = ConsensusMessage::ABAValMsg(aba_val.clone());
+            Synchronizer::transmit(
+                message,
+                &self.name,
+                None,
+                &self.network_filter,
+                &self.committee,
+            )
+            .await?;
+            self.handle_aba_val(&aba_val).await?;
+        }
         Ok(())
     }
     /************* PrePare Protocol ******************/
 
     /************* ABA Protocol ******************/
-    async fn handle_aba_val(&mut self, val: &ABAVal) -> ConsensusResult<()> {
+    async fn handle_aba_val(&mut self, aba_val: &ABAVal) -> ConsensusResult<()> {
         Ok(())
     }
 
     async fn handle_aba_share(&mut self, share: &RandomnessShare) -> ConsensusResult<()> {
+        share.verify(&self.committee, &self.pk_set)?;
+        if let Some(_id) = self
+            .aggregator
+            .add_aba_share_coin(share.clone(), &self.pk_set)?
+        {}
         Ok(())
     }
 
@@ -316,9 +455,9 @@ impl Core {
                         ConsensusMessage::ABACoinShareMsg(share)=>self.handle_aba_share(&share).await,
                         ConsensusMessage::ABAOutputMsg(output)=>self.handle_aba_output(&output).await,
                         ConsensusMessage::PrePareMsg(prepare)=>self.handle_prepare(&prepare).await,
-                        ConsensusMessage::LoopBackMsg(block) => self.handle_rbc_val(&block).await,  //有问题/////////////////
-                        ConsensusMessage::SyncRequestMsg(digest, sender) => self.handle_sync_request(digest, sender).await,//收到其他节点请求区块
-                        ConsensusMessage::SyncReplyMsg(block) => self.handle_rbc_val(&block).await,   //收到区块后存储
+                        ConsensusMessage::LoopBackMsg(epoch,height) => self.process_rbc_output(epoch,height).await,  //有问题/////////////////
+                        ConsensusMessage::SyncRequestMsg(epoch,height, sender) => self.handle_sync_request(epoch,height, sender).await,//收到其他节点请求区块
+                        ConsensusMessage::SyncReplyMsg(block) => self.handle_sync_reply(&block).await,   //收到区块后存储
                     }
                 },
                 Some(block) = self.rx_commit.recv()=>{

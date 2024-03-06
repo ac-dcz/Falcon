@@ -1,10 +1,9 @@
 use crate::config::Committee;
-use crate::core::ConsensusMessage;
+use crate::core::{ConsensusMessage, Core};
 use crate::error::ConsensusResult;
 use crate::filter::FilterInput;
-use crate::messages::Block;
-use crypto::Hash as _;
-use crypto::{Digest, PublicKey};
+use crate::SeqNumber;
+use crypto::PublicKey;
 use futures::stream::futures_unordered::FuturesUnordered;
 use futures::stream::StreamExt as _;
 use log::{debug, error};
@@ -22,7 +21,7 @@ const TIMER_ACCURACY: u64 = 5_000;
 
 pub struct Synchronizer {
     store: Store,
-    inner_channel: Sender<Block>,
+    inner_channel: Sender<(SeqNumber, SeqNumber)>,
 }
 
 impl Synchronizer {
@@ -34,7 +33,7 @@ impl Synchronizer {
         core_channel: Sender<ConsensusMessage>,
         sync_retry_delay: u64,
     ) -> Self {
-        let (tx_inner, mut rx_inner): (_, Receiver<Block>) = channel(10000);
+        let (tx_inner, mut rx_inner): (_, Receiver<(SeqNumber, SeqNumber)>) = channel(10000);
 
         let store_copy = store.clone();
         tokio::spawn(async move {
@@ -46,30 +45,30 @@ impl Synchronizer {
             tokio::pin!(timer);
             loop {
                 tokio::select! {
-                    Some(block) = rx_inner.recv() => {
-                        if pending.insert(block.digest()) {
-                            let parent = block.digest().clone();//?????????????????
-                            let fut = Self::waiter(store_copy.clone(), parent.clone(), block);
+                    Some((epoch,height)) = rx_inner.recv() => {
+                        if pending.insert((epoch,height)) {
+
+                            let fut = Self::waiter(store_copy.clone(),epoch,height,&committee);
                             waiting.push(fut);
 
-                            if !requests.contains_key(&parent){
-                                debug!("Requesting sync for block {}", parent);
+                            if !requests.contains_key(&(epoch,height)){
+                                debug!("Requesting sync for block epoch {}, height {}", epoch,height);
                                 let now = SystemTime::now()
                                     .duration_since(UNIX_EPOCH)
                                     .expect("Failed to measure time")
                                     .as_millis();
-                                requests.insert(parent.clone(), now);
-                                let message = ConsensusMessage::SyncRequestMsg(8, name);//请求缺失的block????????????????????????
+                                requests.insert((epoch,height), now);
+                                let message = ConsensusMessage::SyncRequestMsg(epoch,height, name);
                                 Self::transmit(message, &name, None, &network_filter, &committee).await.unwrap();
                             }
                         }
                     },
                     Some(result) = waiting.next() => match result {
-                        Ok(block) => {
+                        Ok((epoch,height)) => {
                             debug!("consensus sync loopback");
-                            let _ = pending.remove(&block.digest());
-                            let _ = requests.remove(&block.digest());/////////////////?
-                            let message = ConsensusMessage::LoopBackMsg(block);
+                            let _ = pending.remove(&(epoch,height));
+                            let _ = requests.remove(&(epoch,height));/////////////////?
+                            let message = ConsensusMessage::LoopBackMsg(epoch,height);
                             if let Err(e) = core_channel.send(message).await {
                                 panic!("Failed to send message through core channel: {}", e);
                             }
@@ -78,14 +77,14 @@ impl Synchronizer {
                     },
                     () = &mut timer => {
                         // This implements the 'perfect point to point link' abstraction.
-                        for (digest, timestamp) in &requests {
+                        for ((epoch,height), timestamp) in &requests {
                             let now = SystemTime::now()
                                 .duration_since(UNIX_EPOCH)
                                 .expect("Failed to measure time")
                                 .as_millis();
                             if timestamp + (sync_retry_delay as u128) < now {
-                                debug!("Requesting sync for block {} (retry)", digest);
-                                let message = ConsensusMessage::SyncRequestMsg(8, name);///////////////?
+                                debug!("Requesting sync for block epoch {}, height {}", epoch,height);
+                                let message = ConsensusMessage::SyncRequestMsg(*epoch,*height, name);///////////////?
                                 Self::transmit(message, &name, None, &network_filter, &committee).await.unwrap();
                             }
                         }
@@ -101,9 +100,15 @@ impl Synchronizer {
         }
     }
 
-    async fn waiter(mut store: Store, wait_on: Digest, deliver: Block) -> ConsensusResult<Block> {
-        let _ = store.notify_read(wait_on.to_vec()).await?;
-        Ok(deliver)
+    async fn waiter(
+        mut store: Store,
+        epoch: SeqNumber,
+        height: SeqNumber,
+        committee: &Committee,
+    ) -> ConsensusResult<(SeqNumber, SeqNumber)> {
+        let key = Core::rank(epoch, height, committee);
+        let _ = store.notify_read(key.to_le_bytes().into()).await?;
+        Ok((epoch, height))
     }
 
     pub async fn transmit(
@@ -126,36 +131,22 @@ impl Synchronizer {
         Ok(())
     }
 
-    pub async fn get_parent_block(&mut self, _block: &Block) -> ConsensusResult<Option<Block>> {
-        // if block.r == QC::genesis() {
-        //     return Ok(Some(Block::genesis()));
-        // }
-        // let parent = block.parent();
-        // match self.store.read(parent.to_vec()).await? {
-        //     Some(bytes) => Ok(Some(bincode::deserialize(&bytes)?)),
-        //     None => {
-        //         //如果没有 向其他节点发送request
-        //         if let Err(e) = self.inner_channel.send(block.clone()).await {
-        //             panic!("Failed to send request to synchronizer: {}", e);
-        //         }
-        //         Ok(None)
-        //     }
-        // }
-        Ok(None)
-    }
-
-    pub async fn get_ancestors(
+    pub async fn block_request(
         &mut self,
-        block: &Block,
-    ) -> ConsensusResult<Option<(Block, Block)>> {
-        let b1 = match self.get_parent_block(block).await? {
-            Some(b) => b,
-            None => return Ok(None),
+        epoch: SeqNumber,
+        height: SeqNumber,
+        committee: &Committee,
+    ) -> ConsensusResult<()> {
+        let key = Core::rank(epoch, height, committee);
+        return match self.store.read(key.to_le_bytes().into()).await? {
+            Some(_) => Ok(()),
+            None => {
+                //如果没有 向其他节点发送request
+                if let Err(e) = self.inner_channel.send((epoch, height)).await {
+                    panic!("Failed to send request to synchronizer: {}", e);
+                }
+                Ok(())
+            }
         };
-        let b0 = self
-            .get_parent_block(&b1)
-            .await?
-            .expect("We should have all ancestors of delivered blocks");
-        Ok(Some((b0, b1)))
     }
 }
