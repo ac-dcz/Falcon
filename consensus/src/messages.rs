@@ -307,11 +307,11 @@ impl RBCProof {
         }
     }
 
-    pub fn rank(&self, committee: &Committee) -> usize {
-        let r =
-            ((self.epoch as usize) * committee.size() + (self.height as usize)) % MAX_BLOCK_BUFFER;
-        r
-    }
+    // pub fn rank(&self, committee: &Committee) -> usize {
+    //     let r =
+    //         ((self.epoch as usize) * committee.size() + (self.height as usize)) % MAX_BLOCK_BUFFER;
+    //     r
+    // }
 }
 
 impl fmt::Debug for RBCProof {

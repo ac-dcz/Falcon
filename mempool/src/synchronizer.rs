@@ -3,7 +3,6 @@ use crate::core::MempoolMessage;
 use crate::error::{MempoolError, MempoolResult};
 use bytes::Bytes;
 use consensus::{Block, ConsensusMessage, SeqNumber};
-use crypto::Hash as _;
 use crypto::{Digest, PublicKey};
 use futures::future::try_join_all;
 use futures::stream::futures_unordered::FuturesUnordered;
@@ -22,7 +21,7 @@ pub mod synchronizer_tests;
 
 enum SynchronizerMessage {
     Sync(HashSet<Digest>, Block),
-    Clean(SeqNumber),
+    Clean(SeqNumber, SeqNumber),
 }
 
 pub struct Synchronizer {
@@ -44,7 +43,7 @@ impl Synchronizer {
         let store_copy = store.clone();
         tokio::spawn(async move {
             let mut waiting = FuturesUnordered::new();
-            let mut pending: HashMap<Digest, (u64, Sender<()>)> = HashMap::new();
+            let mut pending: HashMap<(SeqNumber, SeqNumber), Sender<()>> = HashMap::new();
             let mut requests = HashMap::new();
 
             let timer = sleep(Duration::from_millis(5000));
@@ -55,17 +54,15 @@ impl Synchronizer {
                         SynchronizerMessage::Sync(mut missing, block) => {//等待缺失的payload
                             // TODO [issue #7]: A bad node may make us run out of memory by sending many blocks
                             // with different round numbers or different payloads.
-
-                            let block_digest = block.digest();
+                            let (epoch,height) = (block.epoch,block.height);
                             let author = block.author;
-                            let round = block.round;
-                            if pending.contains_key(&block_digest) {    //如果处理过，就不用在处理了
+                            if pending.contains_key(&(epoch,height)) {    //如果处理过，就不用在处理了
                                 continue;
                             }
 
                             let wait_for = missing.iter().cloned().map(|x| (x, store_copy.clone())).collect();
                             let (tx_cancel, rx_cancel) = channel(1);
-                            pending.insert(block_digest, (round, tx_cancel));
+                            pending.insert((epoch,height),  tx_cancel);
                             let fut = Self::waiter(wait_for, block, rx_cancel);//等待其他发送缺失的payload，然后从本地的store中取出
                             waiting.push(fut);//存入等待队列中
 
@@ -79,7 +76,7 @@ impl Synchronizer {
                                     .expect("Failed to measure time")
                                     .as_millis();
                                 for x in &missing {
-                                    requests.insert(x.clone(), (round, now));
+                                    requests.insert(x.clone(), (epoch,height, now));
                                 }
 
                                 let message = MempoolMessage::PayloadRequest(missing.clone(), name); //向发送block的节点请求payload
@@ -94,25 +91,27 @@ impl Synchronizer {
                                 .expect("Failed to send payload sync request");
                             }
                         },
-                        SynchronizerMessage::Clean(mut round) => {//将小于等于 round 轮的请求都清除
-                            for (r, handler) in pending.values() {
-                                if r <= &round {
+                        SynchronizerMessage::Clean(epoch,height) => {//将小于等于 round 轮的请求都清除
+                            let size = committee.size() as u64;
+                            let rank = epoch*size+height;
+                            for ((e,h),handler) in &pending {
+                                if e*size+h <= rank {
                                     let _ = handler.send(()).await;
                                 }
                             }
-                            pending.retain(|_, (r, _)| r > &mut round);
-                            requests.retain(|_, (r, _)| r > &mut round);
+                            pending.retain(|(e,h), _| e*size+h > rank);
+                            requests.retain(|_, (e,h,_)| (*e)*size+(*h) > rank);
                         }
                     },
                     Some(result) = waiting.next() => { //等待请求有结果了
                         match result {
                             Ok(Some(block)) => {
                                 debug!("mempool sync loopback block {:?}", block);
-                                let _ = pending.remove(&block.digest());
+                                let _ = pending.remove(&(block.epoch,block.height));
                                 for x in &block.payload {//将已经收到的payload去除
                                     let _ = requests.remove(x);
                                 }
-                                let message = ConsensusMessage::LoopBack(block);
+                                let message = ConsensusMessage::LoopBackMsg(block.epoch,block.height);
                                 if let Err(e) = consensus_channel.send(message).await {
                                     panic!("Failed to send message to consensus: {}", e);
                                 }
@@ -128,7 +127,7 @@ impl Synchronizer {
                             .as_millis();
                         let retransmit: Vec<_> = requests
                             .iter()
-                            .filter(|(_, (_, timestamp))| timestamp + (sync_retry_delay as u128) < now)
+                            .filter(|(_, (_,_, timestamp))| timestamp + (sync_retry_delay as u128) < now)
                             .map(|(digest, _)| digest)
                             .cloned()
                             .collect();
@@ -217,9 +216,9 @@ impl Synchronizer {
         Ok(false)
     }
 
-    pub async fn cleanup(&mut self, round: SeqNumber) {
-        let message = SynchronizerMessage::Clean(round);
-        debug!("cleanup round {}", round);
+    pub async fn cleanup(&mut self, epoch: SeqNumber, height: SeqNumber) {
+        let message = SynchronizerMessage::Clean(epoch, height);
+        debug!("cleanup epoch {} height {}", epoch, height);
         if let Err(e) = self.inner_channel.send(message).await {
             panic!("Failed to send message to synchronizer core: {}", e);
         }

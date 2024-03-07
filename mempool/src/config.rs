@@ -81,4 +81,8 @@ impl Committee {
             .map(|x| x.mempool_address)
             .collect()
     }
+
+    pub fn size(&self) -> usize {
+        self.authorities.len()
+    }
 }

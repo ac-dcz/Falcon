@@ -11,7 +11,7 @@ use crate::messages::{
 };
 use crate::synchronizer::Synchronizer;
 use async_recursion::async_recursion;
-use crypto::{PublicKey, SignatureService};
+use crypto::{Digest, PublicKey, SignatureService};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use log::{debug, error, info, warn};
@@ -64,8 +64,8 @@ pub struct Core {
     tx_core: Sender<ConsensusMessage>,
     rx_core: Receiver<ConsensusMessage>,
     network_filter: Sender<FilterInput>,
-    commit_channel: Sender<Block>,
-    rx_commit: Receiver<Block>,
+    _commit_channel: Sender<Block>,
+    rx_commit: Receiver<(Vec<Digest>, SeqNumber, SeqNumber)>,
     epoch: SeqNumber,
     height: SeqNumber,
     aggregator: Aggregator,
@@ -100,7 +100,7 @@ impl Core {
         network_filter: Sender<FilterInput>,
         commit_channel: Sender<Block>,
     ) -> Self {
-        let (tx_commit, rx_commit): (_, Receiver<Block>) = channel(10000);
+        let (tx_commit, rx_commit) = channel(10000);
         let aggregator = Aggregator::new(committee.clone());
         let commitor = Commitor::new(tx_commit.clone(), committee.clone());
         Self {
@@ -116,7 +116,7 @@ impl Core {
             synchronizer,
             network_filter,
             rx_commit,
-            commit_channel,
+            _commit_channel: commit_channel,
             tx_core,
             rx_core,
             aggregator,
@@ -153,7 +153,31 @@ impl Core {
         self.store.write(key, value).await;
     }
 
-    fn commit_block(&mut self, _block: &Block) -> ConsensusResult<()> {
+    async fn cleanup(
+        &mut self,
+        digest: Vec<Digest>,
+        epoch: SeqNumber,
+        height: SeqNumber,
+    ) -> ConsensusResult<()> {
+        let size = self.committee.size() as SeqNumber;
+        let rank = epoch * size + height;
+        self.aggregator.cleanup(epoch, height);
+        self.mempool_driver.cleanup(digest, epoch, height).await;
+        self.buffers.retain(|(e, h, ..), _| e * size + h > rank);
+        self.rbc_proofs.retain(|(e, h, ..), _| e * size + h > rank);
+        self.rbc_blocks.retain(|(e, h, ..), _| e * size + h > rank);
+        self.rbc_ready.retain(|(e, h)| e * size + h > rank);
+        self.rbc_outputs.retain(|(e, h, ..), _| e * size + h > rank);
+        // self.prepare_flags.retain(|(e, h), _| e * size + h > rank);
+        self.aba_values.retain(|(e, h, ..), _| e * size + h > rank);
+        self.aba_mux_values
+            .retain(|(e, h, ..), _| e * size + h > rank);
+        self.aba_values_flag
+            .retain(|(e, h, ..), _| e * size + h > rank);
+        self.aba_mux_flags
+            .retain(|(e, h, ..), _| e * size + h > rank);
+        self.aba_outputs.retain(|(e, h, ..), _| e * size + h > rank);
+        self.aba_ends.retain(|(e, h, ..), _| e * size + h > rank);
         Ok(())
     }
 
@@ -210,7 +234,12 @@ impl Core {
             #[cfg(feature = "benchmark")]
             for x in &block.payload {
                 // NOTE: This log entry is used to compute performance.
-                info!("Created B{}({})", block.round, base64::encode(x));
+                info!(
+                    "Created B{}({}) epoch {}",
+                    block.height,
+                    base64::encode(x),
+                    block.epoch
+                );
             }
         }
         debug!("Created {:?}", block);
@@ -714,20 +743,11 @@ impl Core {
     /************* ABA Protocol ******************/
 
     pub async fn run(&mut self) {
-        // // Upon booting, generate the very first block (if we are the leader).
-        // // Also, schedule a timer in case we don't hear from the leader.
-        // self.timer.reset();
-        // if self.name == self.leader_elector.get_leader(self.round) {
-        //     //如果是leader就发送propose
-        //     self.generate_proposal(None)
-        //         .await
-        //         .expect("Failed to send the first block");
-        // }
-
-        // This is the main loop: it processes incoming blocks and votes,
-        // and receive timeout notifications from our Timeout Manager.
         let total_nums = self.committee.size() as SeqNumber;
         let mut pending_rbc = FuturesUnordered::new();
+        if let Err(e) = self.generate_rbc_proposal().await {
+            panic!("protocol invoke failed! error {}", e);
+        }
         loop {
             let result = tokio::select! {
                 Some(message) = self.rx_core.recv() => {
@@ -749,8 +769,8 @@ impl Core {
                         }
                     }
                 },
-                Some(block) = self.rx_commit.recv()=>{
-                    self.commit_block(&block)
+                Some((digest,epoch,height)) = self.rx_commit.recv()=>{
+                    self.cleanup(digest,epoch,height).await
                 },
                 Some(epoch) = pending_rbc.next() =>{//超时处理
                     for height in 0..total_nums{

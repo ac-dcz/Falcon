@@ -78,11 +78,18 @@ impl Aggregator {
             .append(share, &self.committee, pk_set)
     }
 
-    // pub fn cleanup_aba_share_coin(&mut self, epoch: &SeqNumber, height: &SeqNumber) {
-    //     self.share_coin_aggregators.retain(|(e, h, _), _| {
-    //         e * (MAX_BLOCK_BUFFER as u64) + h >= epoch * (MAX_BLOCK_BUFFER as u64) + height
-    //     });
-    // }
+    pub fn cleanup(&mut self, epoch: SeqNumber, height: SeqNumber) {
+        let size = self.committee.size() as u64;
+        let rank = epoch * size + height;
+        self.echo_vote_aggregators
+            .retain(|(e, h, ..), _| e * size + h > rank);
+        self.ready_vote_aggregators
+            .retain(|(e, h, ..), _| e * size + h > rank);
+        self.prepare_vote_aggregators
+            .retain(|(e, h, ..), _| e * size + h > rank);
+        self.share_coin_aggregators
+            .retain(|(e, h, _), _| e * size + h > rank);
+    }
 }
 
 struct RBCProofMaker {
@@ -121,12 +128,7 @@ impl RBCProofMaker {
         if self.weight == committee.quorum_threshold()
             || (tag == RBC_READY && self.weight == committee.random_coin_threshold())
         {
-            let proof = RBCProof {
-                epoch,
-                height,
-                votes: self.votes.clone(),
-                tag,
-            };
+            let proof = RBCProof::new(epoch, height, self.votes.clone(), tag);
             return Ok(Some(proof));
         }
         Ok(None)

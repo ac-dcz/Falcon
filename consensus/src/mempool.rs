@@ -1,7 +1,6 @@
 use crate::core::SeqNumber;
 use crate::error::{ConsensusError, ConsensusResult};
 use crate::messages::Block;
-use crate::Committee;
 use crypto::Digest;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot;
@@ -17,7 +16,7 @@ pub enum PayloadStatus {
 pub enum ConsensusMempoolMessage {
     Get(usize, oneshot::Sender<Vec<Digest>>),
     Verify(Box<Block>, oneshot::Sender<PayloadStatus>),
-    Cleanup(Vec<Digest>, SeqNumber),
+    Cleanup(Vec<Digest>, SeqNumber, SeqNumber),
 }
 
 pub struct MempoolDriver {
@@ -54,14 +53,13 @@ impl MempoolDriver {
             .expect("Failed to receive payload status from mempool")
         {
             PayloadStatus::Accept => Ok(true),
-            PayloadStatus::Reject => bail!(ConsensusError::InvalidPayload),
+            PayloadStatus::Reject => Err(ConsensusError::InvalidPayload),
             PayloadStatus::Wait => Ok(false),
         }
     }
 
-    pub async fn cleanup(&mut self, b0: &Block, committee: &Committee) {
-        let digests = b0.payload.iter().cloned().collect();
-        let message = ConsensusMempoolMessage::Cleanup(digests, b0.rank(committee) as SeqNumber);
+    pub async fn cleanup(&mut self, digest: Vec<Digest>, epoch: SeqNumber, height: SeqNumber) {
+        let message = ConsensusMempoolMessage::Cleanup(digest, epoch, height);
         self.mempool_channel
             .send(message)
             .await
