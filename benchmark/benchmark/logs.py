@@ -46,8 +46,15 @@ class LogParser:
         self.commits = self._merge_results([x.items() for x in commits])
         self.h_proposals = self._merge_results([x.items() for x in h_proposals])
         self.h_commits = self._merge_results([x.items() for x in h_commits])
+        
+        # # 不算重复的payload
+        # self.sizes = {
+        #     k: v for x in sizes for k, v in x.items() if k in self.commits
+        # }
+
+        #算上重复的payload
         self.sizes = {
-            k: v for x in sizes for k, v in x.items() if k in self.commits
+            k[:44]: sizes[k[:44]] for k,_ in self.h_commits.items() if k[:44] in sizes
         }
         self.timeouts = max(timeouts)
 
@@ -92,18 +99,18 @@ class LogParser:
         if search(r'panic', log) is not None:
             raise ParseError('Client(s) panicked')
 
-        tmp_p = findall(r'\[(.*Z) .* Created B(\d+)\(([^ ]+)\)', log)
-        tmp = [(d, self._to_posix(t)) for t, _, d in tmp_p]
+        tmp_p = findall(r'\[(.*Z) .* Created B(\d+)\(([^ ]+)\) epoch (\d+)', log)
+        tmp = [(d, self._to_posix(t)) for t, _, d, _ in tmp_p]
         proposals = self._merge_results([tmp])
         
-        tmp = [(d+h, self._to_posix(t)) for t, h, d in tmp_p]
+        tmp = [(d+h+"="+e, self._to_posix(t)) for t, h, d, e in tmp_p]
         h_proposals = self._merge_results([tmp])
 
-        tmp_c = findall(r'\[(.*Z) .* Committed B(\d+)\(([^ ]+)\)', log)
-        tmp = [(d, self._to_posix(t)) for t, _, d in tmp_c]
+        tmp_c = findall(r'\[(.*Z) .* Committed B(\d+)\(([^ ]+)\) epoch (\d+)', log)
+        tmp = [(d, self._to_posix(t)) for t, _, d, _ in tmp_c]
         commits = self._merge_results([tmp])
 
-        tmp = [(d+h, self._to_posix(t)) for t, h, d in tmp_c]
+        tmp = [(d+h+"="+e, self._to_posix(t)) for t, h, d, e in tmp_c]
         h_commits = self._merge_results([tmp])
 
         tmp = findall(r'Payload ([^ ]+) contains (\d+) B', log)
@@ -167,7 +174,7 @@ class LogParser:
         return tps, bps, duration
 
     def _consensus_latency(self):
-        latency = [c - self.proposals[d] for d, c in self.commits.items()]
+        latency = [c - self.h_proposals[d] for d, c in self.h_commits.items()]
         return mean(latency) if latency else 0
 
     def _end_to_end_throughput(self):
