@@ -173,7 +173,7 @@ impl Core {
             .retain(|(e, h, ..), _| e * size + h > rank);
         self.aba_mux_flags
             .retain(|(e, h, ..), _| e * size + h > rank);
-        self.aba_outputs.retain(|(e, h, ..), _| e * size + h > rank);
+        // self.aba_outputs.retain(|(e, h, ..), _| e * size + h > rank);
         // self.aba_ends.retain(|(e, h, ..), _| e * size + h > rank);
         Ok(())
     }
@@ -368,7 +368,7 @@ impl Core {
                 self.process_rbc_output(vote.epoch, vote.height).await?;
                 self.invoke_prepare(vote.epoch, vote.height, OPT).await?;
                 if proof.height == self.height {
-                    self.rbc_advance().await?
+                    self.rbc_advance(proof.epoch + 1).await?
                 }
             }
         }
@@ -405,13 +405,15 @@ impl Core {
         Ok(())
     }
 
-    async fn rbc_advance(&mut self) -> ConsensusResult<()> {
-        self.epoch += 1;
-        //清除之前的缓存
-        self.generate_rbc_proposal().await?; //继续下一轮发送
-        let message = ConsensusMessage::RBCTimeDelay(self.epoch);
-        if let Err(e) = self.tx_core.send(message).await {
-            panic!("Failed to send ConsensusMessage to core: {}", e);
+    async fn rbc_advance(&mut self, epoch: SeqNumber) -> ConsensusResult<()> {
+        if epoch > self.epoch {
+            self.epoch = epoch;
+            //清除之前的缓存
+            self.generate_rbc_proposal().await?; //继续下一轮发送
+            let message = ConsensusMessage::RBCTimeDelay(self.epoch);
+            if let Err(e) = self.tx_core.send(message).await {
+                panic!("Failed to send ConsensusMessage to core: {}", e);
+            }
         }
         Ok(())
     }
@@ -449,34 +451,40 @@ impl Core {
     }
 
     async fn handle_prepare(&mut self, prepare: &Prepare) -> ConsensusResult<()> {
+        debug!(
+            "processing prepare epoch {} height {}",
+            prepare.epoch, prepare.height
+        );
         prepare.verify(&self.committee)?;
         if let Some((val, flag)) = self.aggregator.add_prepare_vote(prepare.clone())? {
+            debug!("prepare=> val {}", val);
             if flag {
                 //可以直接提交
                 self.process_rbc_output(prepare.epoch, prepare.height)
                     .await?;
+            } else {
+                //发送ABA
+                let aba_val = ABAVal::new(
+                    self.name,
+                    prepare.epoch,
+                    prepare.height,
+                    0,
+                    val as usize,
+                    VAL_PHASE,
+                    self.signature_service.clone(),
+                )
+                .await;
+                let message = ConsensusMessage::ABAValMsg(aba_val.clone());
+                Synchronizer::transmit(
+                    message,
+                    &self.name,
+                    None,
+                    &self.network_filter,
+                    &self.committee,
+                )
+                .await?;
+                self.handle_aba_val(&aba_val).await?;
             }
-            //发送ABA
-            let aba_val = ABAVal::new(
-                self.name,
-                prepare.epoch,
-                prepare.height,
-                0,
-                val as usize,
-                VAL_PHASE,
-                self.signature_service.clone(),
-            )
-            .await;
-            let message = ConsensusMessage::ABAValMsg(aba_val.clone());
-            Synchronizer::transmit(
-                message,
-                &self.name,
-                None,
-                &self.network_filter,
-                &self.committee,
-            )
-            .await?;
-            self.handle_aba_val(&aba_val).await?;
         }
         Ok(())
     }
@@ -485,6 +493,11 @@ impl Core {
     /************* ABA Protocol ******************/
     #[async_recursion]
     async fn handle_aba_val(&mut self, aba_val: &ABAVal) -> ConsensusResult<()> {
+        debug!(
+            "processing aba val epoch {} height {}",
+            aba_val.epoch, aba_val.height
+        );
+
         aba_val.verify()?;
 
         let values = self
@@ -492,57 +505,23 @@ impl Core {
             .entry((aba_val.epoch, aba_val.height, aba_val.round))
             .or_insert([HashSet::new(), HashSet::new()]);
 
-        if !values[aba_val.val].insert(aba_val.author) {
-            return Ok(());
-        }
-
-        let mut nums = values[aba_val.val].len() as Stake;
-        if nums == self.committee.random_coin_threshold()
-            && !values[aba_val.val].contains(&self.name)
-        {
-            //f+1
-            let other = ABAVal::new(
-                self.name,
-                aba_val.epoch,
-                aba_val.height,
-                aba_val.round,
-                aba_val.val,
-                VAL_PHASE,
-                self.signature_service.clone(),
-            )
-            .await;
-            let message = ConsensusMessage::ABAValMsg(other);
-            Synchronizer::transmit(
-                message,
-                &self.name,
-                None,
-                &self.network_filter,
-                &self.committee,
-            )
-            .await?;
-            values[aba_val.val].insert(self.name);
-            nums += 1;
-        }
-
-        if nums == self.committee.quorum_threshold() {
-            let values_flag = self
-                .aba_values_flag
-                .entry((aba_val.epoch, aba_val.height, aba_val.round))
-                .or_insert([false, false]);
-
-            if !values_flag[0] && !values_flag[1] {
-                values_flag[aba_val.val] = true;
-                let mux = ABAVal::new(
+        if values[aba_val.val].insert(aba_val.author) {
+            let mut nums = values[aba_val.val].len() as Stake;
+            if nums == self.committee.random_coin_threshold()
+                && !values[aba_val.val].contains(&self.name)
+            {
+                //f+1
+                let other = ABAVal::new(
                     self.name,
                     aba_val.epoch,
                     aba_val.height,
                     aba_val.round,
                     aba_val.val,
-                    MUX_PHASE,
+                    VAL_PHASE,
                     self.signature_service.clone(),
                 )
                 .await;
-                let message = ConsensusMessage::ABAMuxMsg(mux.clone());
+                let message = ConsensusMessage::ABAValMsg(other);
                 Synchronizer::transmit(
                     message,
                     &self.name,
@@ -551,64 +530,100 @@ impl Core {
                     &self.committee,
                 )
                 .await?;
-                self.handle_aba_mux(&mux).await?;
-            } else {
-                values_flag[aba_val.val] = true;
+                values[aba_val.val].insert(self.name);
+                nums += 1;
+            }
+
+            if nums == self.committee.quorum_threshold() {
+                let values_flag = self
+                    .aba_values_flag
+                    .entry((aba_val.epoch, aba_val.height, aba_val.round))
+                    .or_insert([false, false]);
+
+                if !values_flag[0] && !values_flag[1] {
+                    values_flag[aba_val.val] = true;
+                    let mux = ABAVal::new(
+                        self.name,
+                        aba_val.epoch,
+                        aba_val.height,
+                        aba_val.round,
+                        aba_val.val,
+                        MUX_PHASE,
+                        self.signature_service.clone(),
+                    )
+                    .await;
+                    let message = ConsensusMessage::ABAMuxMsg(mux.clone());
+                    Synchronizer::transmit(
+                        message,
+                        &self.name,
+                        None,
+                        &self.network_filter,
+                        &self.committee,
+                    )
+                    .await?;
+                    self.handle_aba_mux(&mux).await?;
+                } else {
+                    values_flag[aba_val.val] = true;
+                }
             }
         }
-
         Ok(())
     }
 
     async fn handle_aba_mux(&mut self, aba_mux: &ABAVal) -> ConsensusResult<()> {
+        debug!(
+            "processing aba mux epoch {} height {}",
+            aba_mux.epoch, aba_mux.height
+        );
         aba_mux.verify()?;
-        let mux_flags = self
-            .aba_mux_flags
+        let values = self
+            .aba_mux_values
             .entry((aba_mux.epoch, aba_mux.height, aba_mux.round))
-            .or_insert([false, false]);
-
-        if !mux_flags[0] && !mux_flags[1] {
-            let values = self
-                .aba_mux_values
+            .or_insert([HashSet::new(), HashSet::new()]);
+        if values[aba_mux.val].insert(aba_mux.author) {
+            let mux_flags = self
+                .aba_mux_flags
                 .entry((aba_mux.epoch, aba_mux.height, aba_mux.round))
-                .or_insert([HashSet::new(), HashSet::new()]);
+                .or_insert([false, false]);
 
-            let nums_opt = values[OPT as usize].len();
-            let nums_pes = values[PES as usize].len();
-            if nums_opt + nums_pes >= self.committee.quorum_threshold() as usize {
-                let value_flags = self
-                    .aba_values_flag
-                    .entry((aba_mux.epoch, aba_mux.height, aba_mux.round))
-                    .or_insert([false, false]);
-                if value_flags[0] && value_flags[1] {
-                    mux_flags[0] = nums_opt > 0;
-                    mux_flags[1] = nums_pes > 1;
-                } else if value_flags[0] {
-                    mux_flags[0] = nums_opt >= self.committee.quorum_threshold() as usize;
-                } else {
-                    mux_flags[1] = nums_pes >= self.committee.quorum_threshold() as usize;
+            if !mux_flags[0] && !mux_flags[1] {
+                let nums_opt = values[OPT as usize].len();
+                let nums_pes = values[PES as usize].len();
+                if nums_opt + nums_pes >= self.committee.quorum_threshold() as usize {
+                    let value_flags = self
+                        .aba_values_flag
+                        .entry((aba_mux.epoch, aba_mux.height, aba_mux.round))
+                        .or_insert([false, false]);
+                    if value_flags[0] && value_flags[1] {
+                        mux_flags[0] = nums_opt > 0;
+                        mux_flags[1] = nums_pes > 1;
+                    } else if value_flags[0] {
+                        mux_flags[0] = nums_opt >= self.committee.quorum_threshold() as usize;
+                    } else {
+                        mux_flags[1] = nums_pes >= self.committee.quorum_threshold() as usize;
+                    }
                 }
-            }
 
-            if mux_flags[0] || mux_flags[1] {
-                let share = RandomnessShare::new(
-                    aba_mux.epoch,
-                    aba_mux.height,
-                    aba_mux.round,
-                    self.name,
-                    self.signature_service.clone(),
-                )
-                .await;
-                let message = ConsensusMessage::ABACoinShareMsg(share.clone());
-                Synchronizer::transmit(
-                    message,
-                    &self.name,
-                    None,
-                    &self.network_filter,
-                    &self.committee,
-                )
-                .await?;
-                self.handle_aba_share(&share).await?;
+                if mux_flags[0] || mux_flags[1] {
+                    let share = RandomnessShare::new(
+                        aba_mux.epoch,
+                        aba_mux.height,
+                        aba_mux.round,
+                        self.name,
+                        self.signature_service.clone(),
+                    )
+                    .await;
+                    let message = ConsensusMessage::ABACoinShareMsg(share.clone());
+                    Synchronizer::transmit(
+                        message,
+                        &self.name,
+                        None,
+                        &self.network_filter,
+                        &self.committee,
+                    )
+                    .await?;
+                    self.handle_aba_share(&share).await?;
+                }
             }
         }
 
@@ -616,6 +631,10 @@ impl Core {
     }
 
     async fn handle_aba_share(&mut self, share: &RandomnessShare) -> ConsensusResult<()> {
+        debug!(
+            "processing coin share epoch {} height {}",
+            share.epoch, share.height
+        );
         share.verify(&self.committee, &self.pk_set)?;
         if let Some(coin) = self
             .aggregator
@@ -639,6 +658,10 @@ impl Core {
     }
 
     async fn handle_aba_output(&mut self, output: &ABAOutput) -> ConsensusResult<()> {
+        debug!(
+            "processing aba output epoch {} height {}",
+            output.epoch, output.height
+        );
         output.verify()?;
         let used = self
             .aba_outputs
@@ -682,6 +705,7 @@ impl Core {
         round: SeqNumber,
         val: usize,
     ) -> ConsensusResult<()> {
+        info!("ABA(epoch {} height {}) end output({})", epoch, height, val);
         if *self.aba_ends.entry((epoch, height)).or_insert(false) {
             return Ok(());
         }
@@ -790,11 +814,15 @@ impl Core {
                     self.cleanup(digest,epoch,height).await
                 },
                 Some(epoch) = pending_rbc.next() =>{//超时处理
+                    if !self.prepare_flags.contains(&(epoch,self.height)){
+                        let _ = self.rbc_advance(epoch+1).await;
+                    }
                     for height in 0..total_nums{
                         if !self.prepare_flags.contains(&(epoch,height)){
                             let _ =self.invoke_prepare(epoch, height, PES).await; ////?
                         }
                     }
+
                     Ok(())
                 },
                 else => break,
