@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use crate::config::{Committee, Parameters};
 use crate::core::Core;
 use crate::error::MempoolResult;
@@ -10,6 +12,7 @@ use log::info;
 use network::{NetReceiver, NetSender};
 use store::Store;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
+use tokio::time::sleep;
 
 #[cfg(test)]
 #[path = "tests/mempool_tests.rs"]
@@ -105,6 +108,7 @@ impl Mempool {
             consensus_mempool_channel,
             /* network_channel */ tx_network,
         );
+
         tokio::spawn(async move {
             core.run().await;
         });

@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use crate::config::{Committee, Parameters, Protocol};
 use crate::core::{ConsensusMessage, Core};
 use crate::error::ConsensusResult;
@@ -12,6 +14,7 @@ use store::Store;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 // use tokio::time::{Duration, sleep};
 use threshold_crypto::PublicKeySet;
+use tokio::time::sleep;
 
 #[cfg(test)]
 #[path = "tests/consensus_tests.rs"]
@@ -86,7 +89,7 @@ impl Consensus {
             parameters.sync_retry_delay,
         )
         .await;
-
+        sleep(Duration::from_millis(parameters.sync_retry_delay)).await; //等待同步
         match protocol {
             Protocol::FlexHBBFT => {
                 // Run HotStuff

@@ -21,6 +21,7 @@ impl Default for Protocol {
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Parameters {
+    pub sync_timeout: u64,
     pub timeout_delay: u64,
     pub sync_retry_delay: u64,
     pub network_delay: u64,
@@ -33,6 +34,7 @@ pub struct Parameters {
 impl Default for Parameters {
     fn default() -> Self {
         Self {
+            sync_timeout: 2000,
             timeout_delay: 5000,
             sync_retry_delay: 10_000,
             min_block_delay: 100,

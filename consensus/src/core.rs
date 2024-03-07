@@ -748,6 +748,10 @@ impl Core {
         if let Err(e) = self.generate_rbc_proposal().await {
             panic!("protocol invoke failed! error {}", e);
         }
+        let message = ConsensusMessage::RBCTimeDelay(self.epoch);
+        if let Err(e) = self.tx_core.send(message).await {
+            panic!("Failed to send ConsensusMessage to core: {}", e);
+        }
         loop {
             let result = tokio::select! {
                 Some(message) = self.rx_core.recv() => {

@@ -67,9 +67,7 @@ impl Node {
             SignatureService::new(secret_key, Some(tss_keys.secret.into_inner()));
 
         let protocol = match parameters.protocol {
-            0 => Protocol::HotStuff,
-            1 => Protocol::AsyncHotStuff,
-            2 => Protocol::TwoChainVABA,
+            0 => Protocol::FlexHBBFT,
             _ => {
                 warn!("Undefined protocol type!");
                 Protocol::Others
@@ -126,7 +124,7 @@ impl Node {
             SecretShare::new(id, pk_share, SerdeSecret(sk_share.clone()), pk_set.clone())
                 .write(filenames[id])?;
         }
-        return Ok(());
+        Ok(())
     }
 
     pub async fn analyze_block(&mut self) {
