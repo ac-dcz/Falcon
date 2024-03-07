@@ -16,8 +16,8 @@ class AWSError(Exception):
 
 
 class InstanceManager:
-    INSTANCE_NAME = 'async-hotstuff-node'
-    SECURITY_GROUP_NAME = 'async-hotstuff'
+    INSTANCE_NAME = 'flexible-HBBFT'
+    SECURITY_GROUP_NAME = 'flexible-HBBFT'
 
     def __init__(self, settings):
         assert isinstance(settings, Settings)
@@ -68,7 +68,7 @@ class InstanceManager:
 
     def _create_security_group(self, client):
         client.create_security_group(
-            Description='HotStuff node',
+            Description='flexible-HBBFT node',
             GroupName=self.SECURITY_GROUP_NAME,
         )
 
@@ -135,9 +135,10 @@ class InstanceManager:
         response = client.describe_images(
             Filters=[{
                 'Name': 'description',
-                'Values': ['Canonical, Ubuntu, 20.04 LTS, amd64 focal image build on 2020-10-26']
+                'Values': ['Canonical, Ubuntu, 20.04 LTS, amd64 focal image *']
             }]
         )
+        # print(response)
         return response['Images'][0]['ImageId']
 
     def create_instances(self, instances):

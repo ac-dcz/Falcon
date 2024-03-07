@@ -205,14 +205,14 @@ class Bench:
         committee = Committee.load(PathMaker.committee_file())
         addresses = [f'{x}:{self.settings.front_port}' for x in hosts]
         rate_share = ceil(rate / committee.size())  # Take faults into account.
-        timeout = node_parameters.timeout_delay
+        synctime = node_parameters.sync_timeout
         client_logs = [PathMaker.client_log_file(i) for i in range(len(hosts))]
         for host, addr, log_file in zip(hosts, addresses, client_logs):
             cmd = CommandMaker.run_client(
                 addr,
                 bench_parameters.tx_size,
                 rate_share,
-                timeout,
+                synctime,
                 nodes=addresses
             )
             self._background_run(host, cmd, log_file)
@@ -238,7 +238,7 @@ class Bench:
 
         # Wait for the nodes to synchronize
         Print.info('Waiting for the nodes to synchronize...')
-        sleep(node_parameters.timeout_delay / 1000)
+        sleep(node_parameters.sync_timeout / 1000)
 
         # Wait for all transactions to be processed.
         duration = bench_parameters.duration
@@ -287,11 +287,7 @@ class Bench:
             raise BenchError('Failed to update nodes', e)
 
         if node_parameters.protocol == 0:
-            Print.info('Running HotStuff')
-        elif node_parameters.protocol == 1:
-            Print.info('Running AsyncHotStuff')
-        elif node_parameters.protocol == 2:
-            Print.info('Running TwoChainVABA')
+            Print.info('Running Flexible Honey Badger BFT')
         else:
             Print.info('Wrong protocol type!')
             return
@@ -299,6 +295,7 @@ class Bench:
         Print.info(f'{bench_parameters.faults} faults')
         Print.info(f'Timeout {node_parameters.timeout_delay} ms, Network delay {node_parameters.network_delay} ms')
         Print.info(f'DDOS attack {node_parameters.ddos}')
+        Print.info(f'Random DDOS attack {self.node_parameters.random_ddos},Chance {self.node_parameters.random_chance}')
 
         hosts = selected_hosts[:bench_parameters.nodes[0]]
         # Upload all configuration files.
