@@ -1,7 +1,7 @@
 // use crate::config::Committee;
-// use crate::core::{Bool, HeightNumber, SeqNumber};
+// use crate::core::{HeightNumber, SeqNumber};
 // use crate::mempool::{ConsensusMempoolMessage, PayloadStatus};
-// use crate::messages::{Block, Timeout, Vote, QC};
+// use crate::messages::{Block, EchoVote, ReadyVote};
 // use crypto::Hash as _;
 // use crypto::{generate_keypair, Digest, PublicKey, SecretKey, Signature};
 // use rand::rngs::StdRng;
@@ -42,24 +42,16 @@
 
 // impl Block {
 //     pub fn new_from_key(
-//         qc: QC,
 //         author: PublicKey,
-//         view: SeqNumber,
-//         round: SeqNumber,
-//         height: HeightNumber,
-//         fallback: Bool,
+//         epoch: SeqNumber,
+//         height: SeqNumber,
 //         payload: Vec<Digest>,
 //         secret: &SecretKey,
 //     ) -> Self {
 //         let block = Block {
-//             qc,
-//             tc: None,
-//             coin: None,
 //             author,
-//             epoch: view,
-//             round,
+//             epoch,
 //             height,
-//             fallback,
 //             payload,
 //             signature: Signature::default(),
 //         };
@@ -74,24 +66,18 @@
 //     }
 // }
 
-// impl Vote {
+// impl EchoVote {
 //     pub fn new_from_key(
-//         hash: Digest,
-//         view: SeqNumber,
-//         round: SeqNumber,
-//         height: HeightNumber,
-//         fallback: Bool,
-//         proposer: PublicKey,
+//         digest: Digest,
+//         epoch: SeqNumber,
+//         height: SeqNumber,
 //         author: PublicKey,
 //         secret: &SecretKey,
 //     ) -> Self {
 //         let vote = Self {
-//             hash,
-//             view,
-//             round,
+//             digest,
+//             epoch,
 //             height,
-//             fallback,
-//             proposer,
 //             author,
 //             signature: Signature::default(),
 //         };
@@ -100,34 +86,33 @@
 //     }
 // }
 
-// impl PartialEq for Vote {
+// impl PartialEq for EchoVote {
 //     fn eq(&self, other: &Self) -> bool {
 //         self.digest() == other.digest()
 //     }
 // }
 
-// impl Timeout {
+// impl ReadyVote {
 //     pub fn new_from_key(
-//         high_qc: QC,
-//         seq: SeqNumber,
+//         digest: Digest,
+//         epoch: SeqNumber,
+//         height: SeqNumber,
 //         author: PublicKey,
 //         secret: &SecretKey,
 //     ) -> Self {
-//         let timeout = Self {
-//             high_qc,
-//             seq,
+//         let vote = Self {
+//             digest,
+//             epoch,
+//             height,
 //             author,
 //             signature: Signature::default(),
 //         };
-//         let signature = Signature::new(&timeout.digest(), &secret);
-//         Self {
-//             signature,
-//             ..timeout
-//         }
+//         let signature = Signature::new(&vote.digest(), &secret);
+//         Self { signature, ..vote }
 //     }
 // }
 
-// impl PartialEq for Timeout {
+// impl PartialEq for ReadyVote {
 //     fn eq(&self, other: &Self) -> bool {
 //         self.digest() == other.digest()
 //     }
@@ -136,98 +121,18 @@
 // // Fixture.
 // pub fn block() -> Block {
 //     let (public_key, secret_key) = keys().pop().unwrap();
-//     Block::new_from_key(
-//         QC::genesis(),
-//         public_key,
-//         0,
-//         1,
-//         0,
-//         0,
-//         Vec::new(),
-//         &secret_key,
-//     )
+//     Block::new_from_key(public_key, 0, 0, Vec::new(), &secret_key)
 // }
 
 // // Fixture.
-// pub fn vote() -> Vote {
+// pub fn echo_vote() -> EchoVote {
 //     let (public_key, secret_key) = keys().pop().unwrap();
-//     Vote::new_from_key(
-//         block().digest(),
-//         0,
-//         1,
-//         0,
-//         0,
-//         block().author,
-//         public_key,
-//         &secret_key,
-//     )
+//     EchoVote::new_from_key(block().digest(), 0, 0, public_key, &secret_key)
 // }
 
-// // Fixture.
-// pub fn qc() -> QC {
-//     let mut keys = keys();
-//     let (public_key, _) = keys.pop().unwrap();
-//     let qc = QC {
-//         hash: Digest::default(),
-//         view: 0,
-//         round: 1,
-//         height: 0,
-//         fallback: 0,
-//         proposer: public_key,
-//         acceptor: public_key,
-//         votes: Vec::new(),
-//     };
-//     let digest = qc.digest();
-//     let votes: Vec<_> = (0..3)
-//         .map(|_| {
-//             let (public_key, secret_key) = keys.pop().unwrap();
-//             (public_key, Signature::new(&digest, &secret_key))
-//         })
-//         .collect();
-//     QC { votes, ..qc }
-// }
-
-// // Fixture.
-// pub fn chain(keys: Vec<(PublicKey, SecretKey)>) -> Vec<Block> {
-//     let mut latest_qc = QC::genesis();
-//     keys.iter()
-//         .enumerate()
-//         .map(|(i, key)| {
-//             // Make a block.
-//             let (public_key, secret_key) = key;
-//             let block = Block::new_from_key(
-//                 latest_qc.clone(),
-//                 *public_key,
-//                 0,
-//                 1 + i as SeqNumber,
-//                 0,
-//                 0,
-//                 Vec::new(),
-//                 secret_key,
-//             );
-
-//             // Make a qc for that block (it will be used for the next block).
-//             let qc = QC {
-//                 hash: block.digest(),
-//                 view: block.epoch,
-//                 round: block.round,
-//                 height: block.height,
-//                 fallback: block.fallback,
-//                 proposer: block.author,
-//                 acceptor: block.author,
-//                 votes: Vec::new(),
-//             };
-//             let digest = qc.digest();
-//             let votes: Vec<_> = keys
-//                 .iter()
-//                 .map(|(public_key, secret_key)| (*public_key, Signature::new(&digest, secret_key)))
-//                 .collect();
-//             latest_qc = QC { votes, ..qc };
-
-//             // Return the block.
-//             block
-//         })
-//         .collect()
+// pub fn ready_vote() -> ReadyVote {
+//     let (public_key, secret_key) = keys().pop().unwrap();
+//     ReadyVote::new_from_key(block().digest(), 0, 0, public_key, &secret_key)
 // }
 
 // // Fixture
@@ -247,7 +152,7 @@
 //                     ConsensusMempoolMessage::Verify(_block, sender) => {
 //                         sender.send(PayloadStatus::Accept).unwrap()
 //                     }
-//                     ConsensusMempoolMessage::Cleanup(_digests, _round) => (),
+//                     ConsensusMempoolMessage::Cleanup(..) => (),
 //                 }
 //             }
 //         });

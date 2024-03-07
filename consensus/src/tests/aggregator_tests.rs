@@ -24,19 +24,46 @@
 //     // Add 2f+1 votes to the aggregator and ensure it returns the cryptographic
 //     // material to make a valid QC.
 //     let (public_key, secret_key) = keys.pop().unwrap();
-//     let vote = Vote::new_from_key(hash.clone(), view, round, height, fallback, proposer, public_key, &secret_key);
+//     let vote = Vote::new_from_key(
+//         hash.clone(),
+//         view,
+//         round,
+//         height,
+//         fallback,
+//         proposer,
+//         public_key,
+//         &secret_key,
+//     );
 //     let result = aggregator.add_vote(vote);
 //     assert!(result.is_ok());
 //     assert!(result.unwrap().is_none());
 
 //     let (public_key, secret_key) = keys.pop().unwrap();
-//     let vote = Vote::new_from_key(hash.clone(), view, round, height, fallback, proposer, public_key, &secret_key);
+//     let vote = Vote::new_from_key(
+//         hash.clone(),
+//         view,
+//         round,
+//         height,
+//         fallback,
+//         proposer,
+//         public_key,
+//         &secret_key,
+//     );
 //     let result = aggregator.add_vote(vote);
 //     assert!(result.is_ok());
 //     assert!(result.unwrap().is_none());
 
 //     let (public_key, secret_key) = keys.pop().unwrap();
-//     let vote = Vote::new_from_key(hash.clone(), view, round, height, fallback, proposer, public_key, &secret_key);
+//     let vote = Vote::new_from_key(
+//         hash.clone(),
+//         view,
+//         round,
+//         height,
+//         fallback,
+//         proposer,
+//         public_key,
+//         &secret_key,
+//     );
 //     match aggregator.add_vote(vote) {
 //         Ok(Some(qc)) => assert!(qc.verify(&committee()).is_ok()),
 //         _ => assert!(false),
