@@ -7,7 +7,7 @@ use crypto::{Digest, PublicKey};
 use futures::future::try_join_all;
 use futures::stream::futures_unordered::FuturesUnordered;
 use futures::stream::StreamExt as _;
-use log::{debug, error};
+use log::{debug, error, info};
 use network::NetMessage;
 use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -59,7 +59,6 @@ impl Synchronizer {
                             if pending.contains_key(&(epoch,height)) {    //如果处理过，就不用在处理了
                                 continue;
                             }
-
                             let wait_for = missing.iter().cloned().map(|x| (x, store_copy.clone())).collect();
                             let (tx_cancel, rx_cancel) = channel(1);
                             pending.insert((epoch,height),  tx_cancel);
@@ -111,6 +110,7 @@ impl Synchronizer {
                                 for x in &block.payload {//将已经收到的payload去除
                                     let _ = requests.remove(x);
                                 }
+                                info!("loop back block epoch {} height {}",block.epoch,block.height);
                                 let message = ConsensusMessage::LoopBackMsg(block.epoch,block.height);
                                 if let Err(e) = consensus_channel.send(message).await {
                                     panic!("Failed to send message to consensus: {}", e);
@@ -206,9 +206,9 @@ impl Synchronizer {
         }
 
         if missing.is_empty() {
-            //区块中的那些payload是没有的
             return Ok(true);
         }
+        info!("miss block epoch {} height {}", block.epoch, block.height);
         let message = SynchronizerMessage::Sync(missing, block);
         if let Err(e) = self.inner_channel.send(message).await {
             panic!("Failed to send message to synchronizer core: {}", e);

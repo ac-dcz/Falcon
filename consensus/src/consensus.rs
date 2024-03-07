@@ -89,7 +89,7 @@ impl Consensus {
             parameters.sync_retry_delay,
         )
         .await;
-        sleep(Duration::from_millis(parameters.sync_retry_delay)).await; //等待同步
+        sleep(Duration::from_millis(parameters.sync_timeout)).await; //等待同步
         match protocol {
             Protocol::FlexHBBFT => {
                 // Run HotStuff

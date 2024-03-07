@@ -56,6 +56,12 @@ pub enum ConsensusError {
     #[error("Received more than one random share from {0}")]
     AuthorityReuseinCoin(PublicKey),
 
+    #[error("Received more than one echo/ready vote from {0}")]
+    AuthorityReuseinRBCVote(PublicKey),
+
+    #[error("Received more than one Prepare from {0}")]
+    AuthorityReuseinPrepare(PublicKey),
+
     #[error("Received vote from unknown authority {0}")]
     UnknownAuthority(PublicKey),
 

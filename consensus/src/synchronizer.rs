@@ -2,11 +2,11 @@ use crate::config::Committee;
 use crate::core::{ConsensusMessage, Core};
 use crate::error::ConsensusResult;
 use crate::filter::FilterInput;
-use crate::SeqNumber;
+use crate::{Block, SeqNumber};
 use crypto::PublicKey;
 use futures::stream::futures_unordered::FuturesUnordered;
 use futures::stream::StreamExt as _;
-use log::{debug, error};
+use log::{debug, error, info};
 use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 use store::Store;
@@ -136,16 +136,17 @@ impl Synchronizer {
         epoch: SeqNumber,
         height: SeqNumber,
         committee: &Committee,
-    ) -> ConsensusResult<()> {
+    ) -> ConsensusResult<Option<Block>> {
         let key = Core::rank(epoch, height, committee);
         return match self.store.read(key.to_le_bytes().into()).await? {
-            Some(_) => Ok(()),
+            Some(bytes) => Ok(Some(bincode::deserialize(&bytes)?)),
             None => {
                 //如果没有 向其他节点发送request
+                info!("block request epoch {} height {}", epoch, height);
                 if let Err(e) = self.inner_channel.send((epoch, height)).await {
                     panic!("Failed to send request to synchronizer: {}", e);
                 }
-                Ok(())
+                Ok(None)
             }
         };
     }

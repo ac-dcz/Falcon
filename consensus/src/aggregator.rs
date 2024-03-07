@@ -120,7 +120,7 @@ impl RBCProofMaker {
         // Ensure it is the first time this authority votes.
         ensure!(
             self.used.insert(author),
-            ConsensusError::AuthorityReuseinCoin(author)
+            ConsensusError::AuthorityReuseinRBCVote(author)
         );
         self.votes.push((author, siganture));
         self.weight += committee.stake(&author);
@@ -160,7 +160,7 @@ impl PrepareMaker {
         let author = prepare.author;
         ensure!(
             self.used.insert(author),
-            ConsensusError::AuthorityReuseinCoin(author)
+            ConsensusError::AuthorityReuseinPrepare(author)
         );
         if prepare.val == OPT {
             self.optnum += committee.stake(&author)

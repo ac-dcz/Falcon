@@ -1,0 +1,19 @@
+{
+    "consensus": {
+        "ddos": false,
+        "exp": 1,
+        "max_payload_size": 500,
+        "min_block_delay": 0,
+        "network_delay": 2000,
+        "sync_retry_delay": 10000,
+        "sync_timeout": 2000,
+        "timeout_delay": 20000
+    },
+    "mempool": {
+        "max_payload_size": 15000,
+        "min_block_delay": 0,
+        "queue_capacity": 10000,
+        "sync_retry_delay": 100000
+    },
+    "protocol": 0
+}

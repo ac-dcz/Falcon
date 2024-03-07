@@ -46,7 +46,7 @@ class LogParser:
         self.commits = self._merge_results([x.items() for x in commits])
         self.h_proposals = self._merge_results([x.items() for x in h_proposals])
         self.h_commits = self._merge_results([x.items() for x in h_commits])
-        
+        sizes = self._merge_results([x.items() for x in sizes])
         # # 不算重复的payload
         # self.sizes = {
         #     k: v for x in sizes for k, v in x.items() if k in self.commits
@@ -56,6 +56,8 @@ class LogParser:
         self.sizes = {
             k[:44]: sizes[k[:44]] for k,_ in self.h_commits.items() if k[:44] in sizes
         }
+
+
         self.timeouts = max(timeouts)
 
         # Check whether clients missed their target rate.
@@ -166,7 +168,7 @@ class LogParser:
     def _consensus_throughput(self):
         if not self.commits:
             return 0, 0, 0
-        start, end = min(self.proposals.values()), max(self.commits.values())
+        start, end = min(self.h_proposals.values()), max(self.h_commits.values())
         duration = end - start
         bytes = sum(self.sizes.values())
         bps = bytes / duration
@@ -180,7 +182,7 @@ class LogParser:
     def _end_to_end_throughput(self):
         if not self.commits:
             return 0, 0, 0
-        start, end = min(self.start), max(self.commits.values())
+        start, end = min(self.start), max(self.h_commits.values())
         duration = end - start
         bytes = sum(self.sizes.values())
         bps = bytes / duration

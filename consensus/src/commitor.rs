@@ -35,7 +35,7 @@ async fn try_to_commit(
             info!("Committed {}", block);
 
             #[cfg(feature = "benchmark")]
-            for x in &_block.payload {
+            for x in &block.payload {
                 info!(
                     "Committed B{}({}) epoch {}",
                     block.height,
