@@ -37,12 +37,13 @@ This command may take a long time the first time you run it (compiling rust code
  Mempool min block delay: 0 ms
 
  + RESULTS:
- Consensus TPS: 966 tx/s
- Consensus BPS: 494,380 B/s
- Consensus latency: 84 ms
+ Consensus TPS: 967 tx/s
+ Consensus BPS: 494,851 B/s
+ Consensus latency: 11 ms
 
  End-to-end TPS: 960 tx/s
- End-to-end BPS: 491,308 B/s
- End-to-end latency: 169 ms
+ End-to-end BPS: 491,531 B/s
+ End-to-end latency: 31 ms
+-----------------------------------------
 ```
 
