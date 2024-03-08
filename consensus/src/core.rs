@@ -73,7 +73,8 @@ pub struct Core {
     buffers: HashMap<(SeqNumber, SeqNumber), bool>,
     rbc_proofs: HashMap<(SeqNumber, SeqNumber, u8), RBCProof>, //需要update
     rbc_ready: HashSet<(SeqNumber, SeqNumber)>,
-    rbc_outputs: HashMap<(SeqNumber, SeqNumber), bool>,
+    rbc_epoch_outputs: HashMap<SeqNumber, HashSet<SeqNumber>>,
+    rbc_timeout: HashMap<SeqNumber, bool>,
     prepare_flags: HashSet<(SeqNumber, SeqNumber)>,
     aba_values: HashMap<(SeqNumber, SeqNumber, SeqNumber), [HashSet<PublicKey>; 2]>,
     aba_values_flag: HashMap<(SeqNumber, SeqNumber, SeqNumber), [bool; 2]>,
@@ -123,7 +124,8 @@ impl Core {
             buffers: HashMap::new(),
             rbc_proofs: HashMap::new(),
             rbc_ready: HashSet::new(),
-            rbc_outputs: HashMap::new(),
+            rbc_epoch_outputs: HashMap::new(),
+            rbc_timeout: HashMap::new(),
             prepare_flags: HashSet::new(),
             aba_values: HashMap::new(),
             aba_mux_values: HashMap::new(),
@@ -367,40 +369,44 @@ impl Core {
             if proof.votes.len() as Stake == self.committee.quorum_threshold() {
                 self.process_rbc_output(vote.epoch, vote.height).await?;
                 self.invoke_prepare(vote.epoch, vote.height, OPT).await?;
-                if proof.height == self.height {
-                    self.rbc_advance(proof.epoch + 1).await?
-                }
             }
         }
 
         Ok(())
     }
 
+    #[async_recursion]
     async fn process_rbc_output(
         &mut self,
         epoch: SeqNumber,
         height: SeqNumber,
     ) -> ConsensusResult<()> {
-        //rbc 输出处理
-        /*
-           1. 是否收到RBC的输出？ 没有 => 发送request
-           2. mempool是否收到了所有  payload？ 没有 => loopback
-           3. 缓存入commitor
-        */
         debug!("processing RBC output epoch {} height {}", epoch, height);
-        if *self.rbc_outputs.entry((epoch, height)).or_insert(false) {
-            return Ok(());
-        }
-        if let Some(block) = self
-            .synchronizer
-            .block_request(epoch, height, &self.committee)
-            .await?
-        {
-            if !self.mempool_driver.verify(block.clone()).await? {
-                return Ok(());
+        let outputs = self
+            .rbc_epoch_outputs
+            .entry(epoch)
+            .or_insert(HashSet::new());
+        if outputs.insert(height) {
+            if let Some(block) = self
+                .synchronizer
+                .block_request(epoch, height, &self.committee)
+                .await?
+            {
+                if !self.mempool_driver.verify(block.clone()).await? {
+                    return Ok(());
+                }
+                self.commitor.buffer_block(block.clone()).await;
+                if outputs.len() as Stake == self.committee.quorum_threshold() {
+                    //wait 2f+1?
+                    self.rbc_advance(epoch + 1).await?;
+                    // check is timeout?
+                    if *self.rbc_timeout.entry(epoch).or_insert(false) {
+                        for height in 0..(self.committee.size() as SeqNumber) {
+                            self.invoke_prepare(epoch, height, PES).await?;
+                        }
+                    }
+                }
             }
-            self.rbc_outputs.insert((epoch, height), true);
-            self.commitor.buffer_block(block.clone()).await;
         }
         Ok(())
     }
@@ -814,13 +820,16 @@ impl Core {
                     self.cleanup(digest,epoch,height).await
                 },
                 Some(epoch) = pending_rbc.next() =>{//超时处理
-                    if !self.prepare_flags.contains(&(epoch,self.height)){
-                        let _ = self.rbc_advance(epoch+1).await;
-                    }
-                    for height in 0..total_nums{
-                        if !self.prepare_flags.contains(&(epoch,height)){
-                            let _ =self.invoke_prepare(epoch, height, PES).await; ////?
+                    self.rbc_timeout.insert(epoch,true);
+
+                    if self.rbc_epoch_outputs.entry(epoch).or_insert(HashSet::new()).len() as Stake >= self.committee.quorum_threshold(){
+
+                        for height in 0..total_nums{
+                            if !self.prepare_flags.contains(&(epoch,height)){
+                                let _ =self.invoke_prepare(epoch, height, PES).await; ////?
+                            }
                         }
+
                     }
 
                     Ok(())

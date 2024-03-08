@@ -182,7 +182,7 @@ class LogParser:
     def _end_to_end_throughput(self):
         if not self.commits:
             return 0, 0, 0
-        start, end = min(self.start), max(self.h_commits.values())
+        start, end = min(self.start), max(self.commits.values())
         duration = end - start
         bytes = sum(self.sizes.values())
         bps = bytes / duration
