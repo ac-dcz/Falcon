@@ -386,15 +386,16 @@ impl Core {
             .rbc_epoch_outputs
             .entry(epoch)
             .or_insert(HashSet::new());
-        if outputs.insert(height) {
+        if !outputs.contains(&height) {
             if let Some(block) = self
                 .synchronizer
                 .block_request(epoch, height, &self.committee)
                 .await?
             {
-                if !self.mempool_driver.verify(block.clone()).await? {
-                    return Ok(());
-                }
+                // if !self.mempool_driver.verify(block.clone()).await? {
+                //     return Ok(());
+                // }
+                outputs.insert(height);
                 self.commitor.buffer_block(block.clone()).await;
                 if outputs.len() as Stake == self.committee.quorum_threshold() {
                     //wait 2f+1?
