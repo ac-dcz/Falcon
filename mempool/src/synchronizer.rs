@@ -7,7 +7,7 @@ use crypto::{Digest, PublicKey};
 use futures::future::try_join_all;
 use futures::stream::futures_unordered::FuturesUnordered;
 use futures::stream::StreamExt as _;
-use log::{debug, error, info};
+use log::{debug, error};
 use network::NetMessage;
 use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -110,8 +110,7 @@ impl Synchronizer {
                                 for x in &block.payload {//将已经收到的payload去除
                                     let _ = requests.remove(x);
                                 }
-                                info!("loop back block epoch {} height {}",block.epoch,block.height);
-                                let message = ConsensusMessage::LoopBackMsg(block.epoch,block.height);
+                                let message = ConsensusMessage::LoopBackMsg(block);
                                 if let Err(e) = consensus_channel.send(message).await {
                                     panic!("Failed to send message to consensus: {}", e);
                                 }
@@ -208,7 +207,6 @@ impl Synchronizer {
         if missing.is_empty() {
             return Ok(true);
         }
-        info!("miss block epoch {} height {}", block.epoch, block.height);
         let message = SynchronizerMessage::Sync(missing, block);
         if let Err(e) = self.inner_channel.send(message).await {
             panic!("Failed to send message to synchronizer core: {}", e);

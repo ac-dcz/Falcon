@@ -46,7 +46,7 @@ pub enum ConsensusMessage {
     ABACoinShareMsg(RandomnessShare),
     ABAOutputMsg(ABAOutput),
     PrePareMsg(Prepare),
-    LoopBackMsg(SeqNumber, SeqNumber),
+    LoopBackMsg(Block),
     SyncRequestMsg(SeqNumber, SeqNumber, PublicKey),
     SyncReplyMsg(Block),
     RBCTimeDelay(SeqNumber),
@@ -271,6 +271,12 @@ impl Core {
             block.epoch, block.height
         );
         block.verify(&self.committee)?;
+        if self.parameters.exp > 0 {
+            if !self.mempool_driver.verify(block.clone()).await? {
+                return Ok(());
+            }
+        }
+
         self.store_block(block).await;
 
         let vote = EchoVote::new(
@@ -392,9 +398,6 @@ impl Core {
                 .block_request(epoch, height, &self.committee)
                 .await?
             {
-                // if !self.mempool_driver.verify(block.clone()).await? {
-                //     return Ok(());
-                // }
                 outputs.insert(height);
                 self.commitor.buffer_block(block.clone()).await;
                 if outputs.len() as Stake == self.committee.quorum_threshold() {
@@ -808,7 +811,7 @@ impl Core {
                         ConsensusMessage::ABACoinShareMsg(share)=>self.handle_aba_share(&share).await,
                         ConsensusMessage::ABAOutputMsg(output)=>self.handle_aba_output(&output).await,
                         ConsensusMessage::PrePareMsg(prepare)=>self.handle_prepare(&prepare).await,
-                        ConsensusMessage::LoopBackMsg(epoch,height) => self.process_rbc_output(epoch,height).await,
+                        ConsensusMessage::LoopBackMsg(block) =>self.handle_rbc_val(&block).await,
                         ConsensusMessage::SyncRequestMsg(epoch,height, sender) => self.handle_sync_request(epoch,height, sender).await,
                         ConsensusMessage::SyncReplyMsg(block) => self.handle_sync_reply(&block).await,
                         ConsensusMessage::RBCTimeDelay(epoch) =>{

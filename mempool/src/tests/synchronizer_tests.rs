@@ -82,8 +82,8 @@ async fn verify_wait() {
     let _ = store.write(payload_1.to_vec(), Vec::new()).await;
     let _ = store.write(payload_2.to_vec(), Vec::new()).await;
     match rx_consensus.recv().await {
-        Some(ConsensusMessage::LoopBackMsg(e, h)) => {
-            assert_eq!((e, h), (epoch, height))
+        Some(ConsensusMessage::LoopBackMsg(block)) => {
+            assert_eq!((block.epoch, block.height), (epoch, height))
         }
         _ => assert!(false),
     }

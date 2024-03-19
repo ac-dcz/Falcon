@@ -30,7 +30,7 @@ impl Synchronizer {
         committee: Committee,
         store: Store,
         network_filter: Sender<FilterInput>,
-        core_channel: Sender<ConsensusMessage>,
+        _core_channel: Sender<ConsensusMessage>,
         sync_retry_delay: u64,
     ) -> Self {
         let (tx_inner, mut rx_inner): (_, Receiver<(SeqNumber, SeqNumber)>) = channel(10000);
@@ -68,10 +68,10 @@ impl Synchronizer {
                             debug!("consensus sync loopback");
                             let _ = pending.remove(&(epoch,height));
                             let _ = requests.remove(&(epoch,height));/////////////////?
-                            let message = ConsensusMessage::LoopBackMsg(epoch,height);
-                            if let Err(e) = core_channel.send(message).await {
-                                panic!("Failed to send message through core channel: {}", e);
-                            }
+                            // let message = ConsensusMessage::LoopBackMsg(epoch,height);
+                            // if let Err(e) = core_channel.send(message).await {
+                            //     panic!("Failed to send message through core channel: {}", e);
+                            // }
                         },
                         Err(e) => error!("{}", e)
                     },
