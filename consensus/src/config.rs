@@ -30,6 +30,7 @@ pub struct Parameters {
     pub ddos: bool,
     pub random_ddos: bool,
     pub random_chance: u64,
+    pub fault: u64,
     pub exp: u64,
 }
 
@@ -45,6 +46,7 @@ impl Default for Parameters {
             ddos: false,
             random_ddos: false,
             random_chance: 0,
+            fault: 0,
             exp: 1,
         }
     }

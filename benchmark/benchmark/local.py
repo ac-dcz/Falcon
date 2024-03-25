@@ -106,12 +106,12 @@ class LocalBench:
             else:
                 Print.info('Wrong protocol type!')
                 return
-
-            Print.info(f'{self.faults} faults')
+     
             Print.info(f'Timeout {self.node_parameters.timeout_delay} ms, Network delay {self.node_parameters.network_delay} ms')
             Print.info(f'DDOS attack {self.node_parameters.ddos}')
             Print.info(f'Random DDOS attack {self.node_parameters.random_ddos},Chance {self.node_parameters.random_chance}')
-
+            Print.info(f'the number of byzantine nodes: {self.node_parameters.fault}')
+            
             # Run the nodes.
             dbs = [PathMaker.db_path(i) for i in range(nodes)]
             node_logs = [PathMaker.node_log_file(i) for i in range(nodes)]

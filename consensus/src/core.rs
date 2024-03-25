@@ -33,8 +33,8 @@ pub const RBC_READY: u8 = 1;
 pub const VAL_PHASE: u8 = 0;
 pub const MUX_PHASE: u8 = 1;
 
-pub const OPT: u8 = 0;
-pub const PES: u8 = 1;
+pub const OPT: u8 = 1;
+pub const PES: u8 = 0;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum ConsensusMessage {
@@ -175,7 +175,7 @@ impl Core {
             .retain(|(e, h, ..), _| e * size + h > rank);
         self.aba_mux_flags
             .retain(|(e, h, ..), _| e * size + h > rank);
-        // self.aba_outputs.retain(|(e, h, ..), _| e * size + h > rank);
+        self.aba_outputs.retain(|(e, h, ..), _| e * size + h > rank);
         // self.aba_ends.retain(|(e, h, ..), _| e * size + h > rank);
         Ok(())
     }
@@ -216,8 +216,11 @@ impl Core {
 
     /************* RBC Protocol ******************/
     #[async_recursion]
-    async fn generate_rbc_proposal(&mut self) -> ConsensusResult<Block> {
+    async fn generate_rbc_proposal(&mut self) -> ConsensusResult<()> {
         // Make a new block.
+        if self.height < self.parameters.fault {
+            return Ok(());
+        }
         debug!("start rbc epoch {}", self.epoch);
         let payload = self
             .mempool_driver
@@ -262,7 +265,7 @@ impl Core {
         // Wait for the minimum block delay.
         sleep(Duration::from_millis(self.parameters.min_block_delay)).await;
 
-        Ok(block)
+        Ok(())
     }
 
     async fn handle_rbc_val(&mut self, block: &Block) -> ConsensusResult<()> {
@@ -330,6 +333,7 @@ impl Core {
                 &self.committee,
             )
             .await?;
+            self.invoke_prepare(vote.epoch, vote.height, OPT).await?;
             self.handle_rbc_ready(&ready).await?;
         }
 
@@ -369,12 +373,12 @@ impl Core {
                     &self.committee,
                 )
                 .await?;
+                self.invoke_prepare(vote.epoch, vote.height, OPT).await?;
                 self.handle_rbc_ready(&ready).await?;
                 return Ok(());
             }
             if proof.votes.len() as Stake == self.committee.quorum_threshold() {
                 self.process_rbc_output(vote.epoch, vote.height).await?;
-                self.invoke_prepare(vote.epoch, vote.height, OPT).await?;
             }
         }
 
@@ -404,10 +408,9 @@ impl Core {
                     //wait 2f+1?
                     self.rbc_advance(epoch + 1).await?;
                     // check is timeout?
-                    if *self.rbc_timeout.entry(epoch).or_insert(false) {
-                        for height in 0..(self.committee.size() as SeqNumber) {
-                            self.invoke_prepare(epoch, height, PES).await?;
-                        }
+
+                    for height in 0..(self.committee.size() as SeqNumber) {
+                        self.invoke_prepare(epoch, height, PES).await?;
                     }
                 }
             }
@@ -420,7 +423,7 @@ impl Core {
             self.epoch = epoch;
             //清除之前的缓存
             self.generate_rbc_proposal().await?; //继续下一轮发送
-            let message = ConsensusMessage::RBCTimeDelay(self.epoch);
+            let message = ConsensusMessage::RBCTimeDelay(epoch);
             if let Err(e) = self.tx_core.send(message).await {
                 panic!("Failed to send ConsensusMessage to core: {}", e);
             }
@@ -462,8 +465,8 @@ impl Core {
 
     async fn handle_prepare(&mut self, prepare: &Prepare) -> ConsensusResult<()> {
         debug!(
-            "processing prepare epoch {} height {}",
-            prepare.epoch, prepare.height
+            "processing prepare epoch {} height {} tag {}",
+            prepare.epoch, prepare.height, prepare.val
         );
         prepare.verify(&self.committee)?;
         if let Some((val, flag)) = self.aggregator.add_prepare_vote(prepare.clone())? {
@@ -550,7 +553,7 @@ impl Core {
                     .entry((aba_val.epoch, aba_val.height, aba_val.round))
                     .or_insert([false, false]);
 
-                if !values_flag[0] && !values_flag[1] {
+                if !values_flag[OPT as usize] && !values_flag[PES as usize] {
                     values_flag[aba_val.val] = true;
                     let mux = ABAVal::new(
                         self.name,
@@ -596,7 +599,7 @@ impl Core {
                 .entry((aba_mux.epoch, aba_mux.height, aba_mux.round))
                 .or_insert([false, false]);
 
-            if !mux_flags[0] && !mux_flags[1] {
+            if !mux_flags[PES as usize] && !mux_flags[OPT as usize] {
                 let nums_opt = values[OPT as usize].len();
                 let nums_pes = values[PES as usize].len();
                 if nums_opt + nums_pes >= self.committee.quorum_threshold() as usize {
@@ -604,17 +607,19 @@ impl Core {
                         .aba_values_flag
                         .entry((aba_mux.epoch, aba_mux.height, aba_mux.round))
                         .or_insert([false, false]);
-                    if value_flags[0] && value_flags[1] {
-                        mux_flags[0] = nums_opt > 0;
-                        mux_flags[1] = nums_pes > 1;
-                    } else if value_flags[0] {
-                        mux_flags[0] = nums_opt >= self.committee.quorum_threshold() as usize;
+                    if value_flags[PES as usize] && value_flags[OPT as usize] {
+                        mux_flags[OPT as usize] = nums_opt > 0;
+                        mux_flags[PES as usize] = nums_pes > 0;
+                    } else if value_flags[OPT as usize] {
+                        mux_flags[OPT as usize] =
+                            nums_opt >= self.committee.quorum_threshold() as usize;
                     } else {
-                        mux_flags[1] = nums_pes >= self.committee.quorum_threshold() as usize;
+                        mux_flags[PES as usize] =
+                            nums_pes >= self.committee.quorum_threshold() as usize;
                     }
                 }
 
-                if mux_flags[0] || mux_flags[1] {
+                if mux_flags[PES as usize] || mux_flags[OPT as usize] {
                     let share = RandomnessShare::new(
                         aba_mux.epoch,
                         aba_mux.height,
@@ -641,9 +646,9 @@ impl Core {
     }
 
     async fn handle_aba_share(&mut self, share: &RandomnessShare) -> ConsensusResult<()> {
-        debug!(
-            "processing coin share epoch {} height {}",
-            share.epoch, share.height
+        info!(
+            "processing coin share epoch {} height {} round {}",
+            share.epoch, share.height, share.round
         );
         share.verify(&self.committee, &self.pk_set)?;
         if let Some(coin) = self
@@ -655,11 +660,11 @@ impl Core {
                 .entry((share.epoch, share.height, share.round))
                 .or_insert([false, false]);
             let mut val = coin;
-            if mux_flags[coin] && !mux_flags[coin ^ 1] {
+            if mux_flags[coin] && !mux_flags[1 - coin] {
                 self.process_aba_output(share.epoch, share.height, share.round, coin)
                     .await?;
-            } else if !mux_flags[coin] && mux_flags[coin ^ 1] {
-                val = coin ^ 1;
+            } else if !mux_flags[coin] && mux_flags[1 - coin] {
+                val = 1 - coin;
             }
             self.aba_adcance_round(share.epoch, share.height, share.round + 1, val)
                 .await?;
@@ -715,10 +720,10 @@ impl Core {
         round: SeqNumber,
         val: usize,
     ) -> ConsensusResult<()> {
-        info!("ABA(epoch {} height {}) end output({})", epoch, height, val);
         if *self.aba_ends.entry((epoch, height)).or_insert(false) {
             return Ok(());
         }
+        info!("ABA(epoch {} height {}) end output({})", epoch, height, val);
         let used = self
             .aba_outputs
             .entry((epoch, height, round))
@@ -824,6 +829,7 @@ impl Core {
                     self.cleanup(digest,epoch,height).await
                 },
                 Some(epoch) = pending_rbc.next() =>{//超时处理
+                    info!("timeout epoch {}",epoch);
                     self.rbc_timeout.insert(epoch,true);
 
                     if self.rbc_epoch_outputs.entry(epoch).or_insert(HashSet::new()).len() as Stake >= self.committee.quorum_threshold(){

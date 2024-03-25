@@ -46,16 +46,16 @@ class LogParser:
         self.commits = self._merge_results([x.items() for x in commits])
         self.h_proposals = self._merge_results([x.items() for x in h_proposals])
         self.h_commits = self._merge_results([x.items() for x in h_commits])
-        sizes = self._merge_results([x.items() for x in sizes])
-        # # 不算重复的payload
-        # self.sizes = {
-        #     k: v for x in sizes for k, v in x.items() if k in self.commits
-        # }
-
-        #算上重复的payload
+        # sizes = self._merge_results([x.items() for x in sizes])
+        # 不算重复的payload
         self.sizes = {
-            k[:44]: sizes[k[:44]] for k,_ in self.h_commits.items() if k[:44] in sizes
+            k: v for x in sizes for k, v in x.items() if k in self.commits
         }
+
+        # #算上重复的payload
+        # self.sizes = {
+        #     k[:44]: sizes[k[:44]] for k,_ in self.h_commits.items() if k[:44] in sizes
+        # }
 
 
         self.timeouts = max(timeouts)

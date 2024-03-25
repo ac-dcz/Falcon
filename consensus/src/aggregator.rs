@@ -170,7 +170,7 @@ impl PrepareMaker {
         let total = self.optnum + self.pesnum;
 
         if total == committee.quorum_threshold() {
-            if self.optnum >= committee.random_coin_threshold() {
+            if self.optnum >= committee.quorum_threshold() {
                 return Ok(Some((OPT, true)));
             } else if self.optnum > 0 {
                 return Ok(Some((OPT, false)));

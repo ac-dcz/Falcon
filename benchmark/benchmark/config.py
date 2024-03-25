@@ -109,6 +109,7 @@ class NodeParameters:
             inputs += [json['consensus']['ddos']]
             inputs += [json['consensus']['random_ddos']]
             inputs += [json['consensus']['random_chance']]
+            inputs += [json['consensus']['fault']]
             inputs += [json['consensus']['exp']]
             inputs += [json['mempool']['queue_capacity']]
             inputs += [json['consensus']['sync_retry_delay']]
@@ -129,6 +130,7 @@ class NodeParameters:
         self.random_chance = json['consensus']['random_chance']
         self.protocol = json['protocol']
         self.json = json
+        self.fault = json['consensus']['fault']
 
     def print(self, filename):
         assert isinstance(filename, str)
