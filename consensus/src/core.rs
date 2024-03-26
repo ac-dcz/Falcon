@@ -12,8 +12,6 @@ use crate::messages::{
 use crate::synchronizer::Synchronizer;
 use async_recursion::async_recursion;
 use crypto::{Digest, PublicKey, SignatureService};
-use futures::stream::FuturesUnordered;
-use futures::StreamExt;
 use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use store::Store;
@@ -49,7 +47,6 @@ pub enum ConsensusMessage {
     LoopBackMsg(Block),
     SyncRequestMsg(SeqNumber, SeqNumber, PublicKey),
     SyncReplyMsg(Block),
-    RBCTimeDelay(SeqNumber),
 }
 
 pub struct Core {
@@ -61,11 +58,12 @@ pub struct Core {
     pk_set: PublicKeySet,
     mempool_driver: MempoolDriver,
     synchronizer: Synchronizer,
-    tx_core: Sender<ConsensusMessage>,
+    _tx_core: Sender<ConsensusMessage>,
     rx_core: Receiver<ConsensusMessage>,
     network_filter: Sender<FilterInput>,
     _commit_channel: Sender<Block>,
     rx_commit: Receiver<(Vec<Digest>, SeqNumber, SeqNumber)>,
+    fallback: SeqNumber,
     epoch: SeqNumber,
     height: SeqNumber,
     aggregator: Aggregator,
@@ -74,7 +72,6 @@ pub struct Core {
     rbc_proofs: HashMap<(SeqNumber, SeqNumber, u8), RBCProof>, //需要update
     rbc_ready: HashSet<(SeqNumber, SeqNumber)>,
     rbc_epoch_outputs: HashMap<SeqNumber, HashSet<SeqNumber>>,
-    rbc_timeout: HashMap<SeqNumber, bool>,
     prepare_flags: HashSet<(SeqNumber, SeqNumber)>,
     aba_values: HashMap<(SeqNumber, SeqNumber, SeqNumber), [HashSet<PublicKey>; 2]>,
     aba_values_flag: HashMap<(SeqNumber, SeqNumber, SeqNumber), [bool; 2]>,
@@ -104,6 +101,7 @@ impl Core {
         let aggregator = Aggregator::new(committee.clone());
         let commitor = Commitor::new(tx_commit.clone(), committee.clone());
         Self {
+            fallback: parameters.fallback,
             epoch: 0,
             height: committee.id(name) as u64,
             name,
@@ -117,7 +115,7 @@ impl Core {
             network_filter,
             rx_commit,
             _commit_channel: commit_channel,
-            tx_core,
+            _tx_core: tx_core,
             rx_core,
             aggregator,
             commitor,
@@ -125,7 +123,6 @@ impl Core {
             rbc_proofs: HashMap::new(),
             rbc_ready: HashSet::new(),
             rbc_epoch_outputs: HashMap::new(),
-            rbc_timeout: HashMap::new(),
             prepare_flags: HashSet::new(),
             aba_values: HashMap::new(),
             aba_mux_values: HashMap::new(),
@@ -136,10 +133,10 @@ impl Core {
         }
     }
 
-    async fn delay_rbc_time(epoch: SeqNumber, time_out: SeqNumber) -> SeqNumber {
-        sleep(Duration::from_millis(time_out)).await;
-        epoch
-    }
+    // async fn delay_rbc_time(epoch: SeqNumber, time_out: SeqNumber) -> SeqNumber {
+    //     sleep(Duration::from_millis(time_out)).await;
+    //     epoch
+    // }
 
     pub fn rank(epoch: SeqNumber, height: SeqNumber, committee: &Committee) -> usize {
         let r = ((epoch as usize) * committee.size() + (height as usize)) % MAX_BLOCK_BUFFER;
@@ -404,16 +401,30 @@ impl Core {
             {
                 outputs.insert(height);
                 self.commitor.buffer_block(block.clone()).await;
+
                 if outputs.len() as Stake == self.committee.quorum_threshold() {
                     //wait 2f+1?
                     self.rbc_advance(epoch + 1).await?;
                     // check is timeout?
-
-                    for height in 0..(self.committee.size() as SeqNumber) {
-                        self.invoke_prepare(epoch, height, PES).await?;
-                    }
+                    self.fallback(epoch).await?;
                 }
             }
+        }
+        Ok(())
+    }
+
+    async fn fallback(&mut self, cur_epoch: SeqNumber) -> ConsensusResult<()> {
+        if cur_epoch >= self.fallback {
+            let fall_epoch = cur_epoch - self.fallback;
+            // let mut total = 0;
+            for height in 0..(self.committee.size() as SeqNumber) {
+                if !self.prepare_flags.contains(&(fall_epoch, height)) {
+                    self.invoke_prepare(fall_epoch, height, PES).await?;
+                    // total += 1;
+                }
+            }
+            // let f = self.committee.random_coin_threshold() - 1;
+            // self.fallback = ((self.parameters.fallback - 1) * )
         }
         Ok(())
     }
@@ -423,10 +434,6 @@ impl Core {
             self.epoch = epoch;
             //清除之前的缓存
             self.generate_rbc_proposal().await?; //继续下一轮发送
-            let message = ConsensusMessage::RBCTimeDelay(epoch);
-            if let Err(e) = self.tx_core.send(message).await {
-                panic!("Failed to send ConsensusMessage to core: {}", e);
-            }
         }
         Ok(())
     }
@@ -795,14 +802,10 @@ impl Core {
     }
     /************* ABA Protocol ******************/
     pub async fn run(&mut self) {
-        let total_nums = self.committee.size() as SeqNumber;
-        let mut pending_rbc = FuturesUnordered::new();
+        // let total_nums = self.committee.size() as SeqNumber;
+        // let mut pending_rbc = FuturesUnordered::new();
         if let Err(e) = self.generate_rbc_proposal().await {
             panic!("protocol invoke failed! error {}", e);
-        }
-        let message = ConsensusMessage::RBCTimeDelay(self.epoch);
-        if let Err(e) = self.tx_core.send(message).await {
-            panic!("Failed to send ConsensusMessage to core: {}", e);
         }
         loop {
             let result = tokio::select! {
@@ -819,30 +822,10 @@ impl Core {
                         ConsensusMessage::LoopBackMsg(block) =>self.handle_rbc_val(&block).await,
                         ConsensusMessage::SyncRequestMsg(epoch,height, sender) => self.handle_sync_request(epoch,height, sender).await,
                         ConsensusMessage::SyncReplyMsg(block) => self.handle_sync_reply(&block).await,
-                        ConsensusMessage::RBCTimeDelay(epoch) =>{
-                            pending_rbc.push(Self::delay_rbc_time(epoch, self.parameters.timeout_delay));
-                            Ok(())
-                        }
                     }
                 },
                 Some((digest,epoch,height)) = self.rx_commit.recv()=>{
                     self.cleanup(digest,epoch,height).await
-                },
-                Some(epoch) = pending_rbc.next() =>{//超时处理
-                    info!("timeout epoch {}",epoch);
-                    self.rbc_timeout.insert(epoch,true);
-
-                    if self.rbc_epoch_outputs.entry(epoch).or_insert(HashSet::new()).len() as Stake >= self.committee.quorum_threshold(){
-
-                        for height in 0..total_nums{
-                            if !self.prepare_flags.contains(&(epoch,height)){
-                                let _ =self.invoke_prepare(epoch, height, PES).await; ////?
-                            }
-                        }
-
-                    }
-
-                    Ok(())
                 },
                 else => break,
             };

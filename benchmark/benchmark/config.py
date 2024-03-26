@@ -111,6 +111,7 @@ class NodeParameters:
             inputs += [json['consensus']['random_chance']]
             inputs += [json['consensus']['fault']]
             inputs += [json['consensus']['exp']]
+            inputs += [json['consensus']['fallback']]
             inputs += [json['mempool']['queue_capacity']]
             inputs += [json['consensus']['sync_retry_delay']]
             inputs += [json['mempool']['max_payload_size']]

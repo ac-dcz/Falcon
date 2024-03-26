@@ -32,6 +32,7 @@ pub struct Parameters {
     pub random_chance: u64,
     pub fault: u64,
     pub exp: u64,
+    pub fallback: u64,
 }
 
 impl Default for Parameters {
@@ -48,6 +49,7 @@ impl Default for Parameters {
             random_chance: 0,
             fault: 0,
             exp: 1,
+            fallback: 1,
         }
     }
 }
