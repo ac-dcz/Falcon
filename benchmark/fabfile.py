@@ -13,13 +13,14 @@ def local(ctx):
     ''' Run benchmarks on localhost '''
     bench_params = {
         'nodes': 4,
-        'rate': 1000,
+        'rate': 1_000,
         'tx_size': 512,
         'faults': 0,
         'duration': 30,
     }
     node_params = {
         'consensus': {
+            'fault': 1,
             'sync_timeout': 2_000,
             'timeout_delay': 2_000,
             'sync_retry_delay': 10_000,
@@ -27,9 +28,9 @@ def local(ctx):
             'min_block_delay': 0,
             'network_delay': 20_000, # message delay on the leaders' proposals during DDoS
             'ddos': False, # True for DDoS attack on the leader, False otherwise
-            'random_ddos': True,
+            'random_ddos': False,
             'random_chance': 10,
-            'exp': 1 # multiplicative factor for exponential fallback
+            'exp': 0 # multiplicative factor for exponential fallback
         },
         'mempool': {
             'queue_capacity': 10_000,
