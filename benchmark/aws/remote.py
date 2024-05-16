@@ -287,15 +287,15 @@ class Bench:
             raise BenchError('Failed to update nodes', e)
 
         if node_parameters.protocol == 0:
-            Print.info('Running Flexible Honey Badger BFT')
+            Print.info('Running Flexiable Honey Badger BFT')
         else:
             Print.info('Wrong protocol type!')
             return
 
+        Print.info(f'{node_parameters.fault} faults')
         Print.info(f'Timeout {node_parameters.timeout_delay} ms, Network delay {node_parameters.network_delay} ms')
         Print.info(f'DDOS attack {node_parameters.ddos}')
-        Print.info(f'Random DDOS attack {self.node_parameters.random_ddos},Chance {self.node_parameters.random_chance}')
-        Print.info(f'the number of byzantine nodes: {self.node_parameters.fault}')
+        Print.info(f'Random DDOS attack {node_parameters.random_ddos},Chance {node_parameters.random_chance}')
 
         hosts = selected_hosts[:bench_parameters.nodes[0]]
         # Upload all configuration files.
@@ -320,8 +320,8 @@ class Bench:
                 #     continue
 
                 # Do not boot faulty nodes.
-                faults = bench_parameters.faults
-                hosts = hosts[:n-faults]
+                faults = node_parameters.fault
+                # hosts = hosts[:n-faults]
 
                 protocol = node_parameters.protocol
                 ddos = node_parameters.ddos
@@ -333,9 +333,10 @@ class Bench:
                         self._run_single(
                             hosts, r, bench_parameters, node_parameters, debug
                         )
-                        self._logs(hosts, faults, protocol, ddos).print(PathMaker.result_file(
-                            n, r, bench_parameters.tx_size, faults
-                        ))
+                        self._logs(hosts, faults, protocol, ddos).print(
+                            PathMaker.result_file(n, r, bench_parameters.tx_size, faults),
+                            PathMaker.tx_file(n, r, bench_parameters.tx_size, faults)
+                        )
                     except (subprocess.SubprocessError, GroupException, ParseError) as e:
                         self.kill(hosts=hosts)
                         if isinstance(e, GroupException):

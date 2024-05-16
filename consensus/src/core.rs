@@ -653,7 +653,7 @@ impl Core {
     }
 
     async fn handle_aba_share(&mut self, share: &RandomnessShare) -> ConsensusResult<()> {
-        info!(
+        debug!(
             "processing coin share epoch {} height {} round {}",
             share.epoch, share.height, share.round
         );
@@ -730,7 +730,7 @@ impl Core {
         if *self.aba_ends.entry((epoch, height)).or_insert(false) {
             return Ok(());
         }
-        info!("ABA(epoch {} height {}) end output({})", epoch, height, val);
+        debug!("ABA(epoch {} height {}) end output({})", epoch, height, val);
         let used = self
             .aba_outputs
             .entry((epoch, height, round))
@@ -810,6 +810,9 @@ impl Core {
         loop {
             let result = tokio::select! {
                 Some(message) = self.rx_core.recv() => {
+                    if self.height<self.parameters.fault{
+                        continue;
+                    }
                     match message {
                         ConsensusMessage::RBCValMsg(block)=> self.handle_rbc_val(&block).await,
                         ConsensusMessage::RBCEchoMsg(evote)=> self.handle_rbc_echo(&evote).await,
