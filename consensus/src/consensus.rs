@@ -13,7 +13,9 @@ use network::{NetReceiver, NetSender};
 use store::Store;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 // use tokio::time::{Duration, sleep};
+use futures::future::join_all;
 use threshold_crypto::PublicKeySet;
+use tokio::net::TcpStream;
 use tokio::time::sleep;
 
 #[cfg(test)]
@@ -89,7 +91,20 @@ impl Consensus {
             parameters.sync_retry_delay,
         )
         .await;
+
+        let nodes = committee.broadcast_addresses(&name);
+        info!("Waiting for all nodes to be online...");
+        join_all(nodes.iter().cloned().map(|address| {
+            tokio::spawn(async move {
+                while TcpStream::connect(address).await.is_err() {
+                    sleep(Duration::from_millis(10)).await;
+                }
+            })
+        }))
+        .await;
+
         sleep(Duration::from_millis(parameters.sync_timeout)).await; //等待同步
+
         match protocol {
             Protocol::FlexHBBFT => {
                 // Run HotStuff
