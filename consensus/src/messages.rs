@@ -343,6 +343,7 @@ pub struct Prepare {
     pub epoch: SeqNumber,
     pub height: SeqNumber,
     pub val: u8,
+    pub phase: u8,
     pub signature: Signature,
 }
 
@@ -351,6 +352,7 @@ impl Prepare {
         author: PublicKey,
         epoch: SeqNumber,
         height: SeqNumber,
+        phase: u8,
         val: u8,
         mut signature_service: SignatureService,
     ) -> Self {
@@ -359,6 +361,7 @@ impl Prepare {
             epoch,
             height,
             val,
+            phase,
             signature: Signature::default(),
         };
         prepare.signature = signature_service.request_signature(prepare.digest()).await;
@@ -393,6 +396,7 @@ impl Hash for Prepare {
         hasher.update(self.epoch.to_le_bytes());
         hasher.update(self.height.to_le_bytes());
         hasher.update(self.val.to_le_bytes());
+        hasher.update(self.phase.to_le_bytes());
         Digest(hasher.finalize().as_slice()[..32].try_into().unwrap())
     }
 }
@@ -401,11 +405,12 @@ impl fmt::Debug for Prepare {
     fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
         write!(
             f,
-            "{}: Prepare(author {}, epoch {},  height {}, val {})",
+            "{}: Prepare(author {}, epoch {},  height {}, phase {}, val {})",
             self.digest(),
             self.author,
             self.epoch,
             self.height,
+            self.phase,
             self.val
         )
     }

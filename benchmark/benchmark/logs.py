@@ -22,7 +22,7 @@ class LogParser:
         self.protocol = protocol
         self.ddos = ddos
         self.faults = faults
-        self.committee_size = len(nodes) + faults
+        self.committee_size = len(nodes)
 
         # Parse the clients logs.
         try:
@@ -76,7 +76,7 @@ class LogParser:
         merged = {}
         for x in input:
             for k, v in x:
-                if not k in merged or merged[k] < v:
+                if not k in merged or merged[k] > v:
                     merged[k] = v
         return merged
 
@@ -176,7 +176,7 @@ class LogParser:
         return tps, bps, duration
 
     def _consensus_latency(self):
-        latency = [c - self.h_proposals[d] for d, c in self.h_commits.items()]
+        latency = [c - self.h_proposals[d] for d, c in self.h_commits.items() if d in self.h_proposals]
         return mean(latency) if latency else 0
 
     def _end_to_end_throughput(self):

@@ -28,6 +28,9 @@ pub type HeightNumber = u8; // height={1,2} in fallback chain, height=0 for sync
 pub const RBC_ECHO: u8 = 0;
 pub const RBC_READY: u8 = 1;
 
+pub const PRE_ONE: u8 = 0;
+pub const PRE_TWO: u8 = 1;
+
 pub const VAL_PHASE: u8 = 0;
 pub const MUX_PHASE: u8 = 1;
 
@@ -452,6 +455,7 @@ impl Core {
                 self.name,
                 epoch,
                 height,
+                PRE_ONE,
                 val,
                 self.signature_service.clone(),
             )
@@ -470,40 +474,69 @@ impl Core {
         Ok(())
     }
 
+    #[async_recursion]
     async fn handle_prepare(&mut self, prepare: &Prepare) -> ConsensusResult<()> {
         debug!(
-            "processing prepare epoch {} height {} tag {}",
-            prepare.epoch, prepare.height, prepare.val
+            "processing prepare epoch {} height {} phase {} tag {}",
+            prepare.epoch, prepare.height, prepare.phase, prepare.val
         );
         prepare.verify(&self.committee)?;
         if let Some((val, flag)) = self.aggregator.add_prepare_vote(prepare.clone())? {
             debug!("prepare=> val {}", val);
             if flag {
-                //可以直接提交
-                self.process_rbc_output(prepare.epoch, prepare.height)
-                    .await?;
+                if prepare.phase == PRE_ONE {
+                    //可以直接提交
+                    self.process_rbc_output(prepare.epoch, prepare.height)
+                        .await?;
+                } else if prepare.phase == PRE_TWO {
+                    self.commitor
+                        .filter_block(Self::rank(prepare.epoch, prepare.height, &self.committee))
+                        .await;
+                }
             } else {
-                //发送ABA
-                let aba_val = ABAVal::new(
-                    self.name,
-                    prepare.epoch,
-                    prepare.height,
-                    0,
-                    val as usize,
-                    VAL_PHASE,
-                    self.signature_service.clone(),
-                )
-                .await;
-                let message = ConsensusMessage::ABAValMsg(aba_val.clone());
-                Synchronizer::transmit(
-                    message,
-                    &self.name,
-                    None,
-                    &self.network_filter,
-                    &self.committee,
-                )
-                .await?;
-                self.handle_aba_val(&aba_val).await?;
+                if prepare.phase == PRE_ONE {
+                    let pre2 = Prepare::new(
+                        self.name,
+                        prepare.epoch,
+                        prepare.height,
+                        PRE_TWO,
+                        val,
+                        self.signature_service.clone(),
+                    )
+                    .await;
+                    let message = ConsensusMessage::PrePareMsg(pre2.clone());
+                    Synchronizer::transmit(
+                        message,
+                        &self.name,
+                        None,
+                        &self.network_filter,
+                        &self.committee,
+                    )
+                    .await?;
+                    self.handle_prepare(&pre2).await?;
+                } else if prepare.phase == PRE_TWO {
+                    //发送ABA
+                    let aba_val = ABAVal::new(
+                        self.name,
+                        prepare.epoch,
+                        prepare.height,
+                        0,
+                        val as usize,
+                        VAL_PHASE,
+                        self.signature_service.clone(),
+                    )
+                    .await;
+                    let message = ConsensusMessage::ABAValMsg(aba_val.clone());
+                    Synchronizer::transmit(
+                        message,
+                        &self.name,
+                        None,
+                        &self.network_filter,
+                        &self.committee,
+                    )
+                    .await?;
+                    self.handle_aba_val(&aba_val).await?;
+                }
             }
         }
         Ok(())

@@ -98,12 +98,13 @@ class Bench:
 
         # Ensure there are enough hosts.
         hosts = self.manager.hosts()
+        # print(hosts.values())
         if sum(len(x) for x in hosts.values()) < nodes:
             return []
 
         # Select the hosts in different data centers.
-        ordered = zip(*hosts.values())
-        ordered = [x for y in ordered for x in y]
+        # ordered = zip(*hosts.values())
+        ordered = [x for y in hosts.values() for x in y]
         return ordered[:nodes]
 
     def _background_run(self, host, command, log_file):
@@ -238,7 +239,7 @@ class Bench:
 
         # Wait for the nodes to synchronize
         Print.info('Waiting for the nodes to synchronize...')
-        sleep(node_parameters.sync_timeout / 1000)
+        sleep(node_parameters.sync_timeout/1000 + 20)
 
         # Wait for all transactions to be processed.
         duration = bench_parameters.duration
@@ -270,11 +271,13 @@ class Bench:
         try:
             bench_parameters = BenchParameters(bench_parameters_dict)
             node_parameters = NodeParameters(node_parameters_dict)
+            # print(bench_parameters.__dict__)
         except ConfigError as e:
             raise BenchError('Invalid nodes or bench parameters', e)
 
         # Select which hosts to use.
         selected_hosts = self._select_hosts(bench_parameters)
+        # print(selected_hosts)
         if not selected_hosts:
             Print.warn('There are not enough instances available')
             return

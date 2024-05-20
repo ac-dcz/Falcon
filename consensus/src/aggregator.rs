@@ -1,5 +1,5 @@
 use crate::config::{Committee, Stake};
-use crate::core::{SeqNumber, OPT, PES, RBC_ECHO, RBC_READY};
+use crate::core::{SeqNumber, OPT, PES, PRE_ONE, PRE_TWO, RBC_ECHO, RBC_READY};
 use crate::error::{ConsensusError, ConsensusResult};
 use crate::messages::{EchoVote, Prepare, RBCProof, RandomnessShare, ReadyVote};
 use crypto::{PublicKey, Signature};
@@ -18,7 +18,7 @@ pub struct Aggregator {
     share_coin_aggregators: HashMap<(SeqNumber, SeqNumber, SeqNumber), Box<RandomCoinMaker>>,
     echo_vote_aggregators: HashMap<(SeqNumber, SeqNumber), Box<RBCProofMaker>>,
     ready_vote_aggregators: HashMap<(SeqNumber, SeqNumber), Box<RBCProofMaker>>,
-    prepare_vote_aggregators: HashMap<(SeqNumber, SeqNumber), Box<PrepareMaker>>,
+    prepare_vote_aggregators: HashMap<(SeqNumber, SeqNumber, u8), Box<PrepareMaker>>,
 }
 
 impl Aggregator {
@@ -62,7 +62,7 @@ impl Aggregator {
 
     pub fn add_prepare_vote(&mut self, prepare: Prepare) -> ConsensusResult<Option<(u8, bool)>> {
         self.prepare_vote_aggregators
-            .entry((prepare.epoch, prepare.height))
+            .entry((prepare.epoch, prepare.height, prepare.phase))
             .or_insert_with(|| Box::new(PrepareMaker::new()))
             .append(prepare, &self.committee)
     }
@@ -170,13 +170,21 @@ impl PrepareMaker {
         let total = self.optnum + self.pesnum;
 
         if total == committee.quorum_threshold() {
-            if self.optnum >= committee.quorum_threshold() {
-                return Ok(Some((OPT, true)));
-            } else if self.optnum > 0 {
+            if prepare.phase == PRE_ONE {
+                if self.optnum >= committee.quorum_threshold() {
+                    return Ok(Some((OPT, true)));
+                } else if self.optnum > 0 {
+                    return Ok(Some((OPT, false)));
+                }
+                return Ok(Some((PES, false)));
+            } else if prepare.phase == PRE_TWO {
+                if self.pesnum >= committee.quorum_threshold() {
+                    return Ok(Some((PES, true)));
+                } else if self.pesnum > 0 {
+                    return Ok(Some((PES, false)));
+                }
                 return Ok(Some((OPT, false)));
             }
-
-            return Ok(Some((PES, false)));
         }
         Ok(None)
     }
