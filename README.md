@@ -1,13 +1,13 @@
-# Flexible Honey Badger BFT
+# Falcon
 
-about Flexible Honey Badger BFT...
+about Falcon...
 
 ## Quick Start
-Flexible Honey Badger BFT is written in Rust, but all benchmarking scripts are written in Python and run with [Fabric](http://www.fabfile.org/).
+Falcon BFT is written in Rust, but all benchmarking scripts are written in Python and run with [Fabric](http://www.fabfile.org/).
 To deploy and benchmark a testbed of 4 nodes on your local machine, clone the repo and install the python dependencies:
 ```
-$ git clone https://github.com/ac-dcz/Flexible-HBBFT
-$ cd Flexible-HBBFT/benchmark
+$ git clone https://github.com/ac-dcz/Falcon
+$ cd Falcon/benchmark
 $ pip install -r requirements.txt
 ```
 You also need to install Clang (required by rocksdb) and [tmux](https://linuxize.com/post/getting-started-with-tmux/#installing-tmux) (which runs all nodes and clients in the background). Finally, run a local benchmark using fabric:
